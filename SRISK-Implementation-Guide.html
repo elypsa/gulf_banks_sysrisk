@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.8.27">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+
+<title>srisk-implementation-guide</title>
+<style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+</style>
+
+
+<script src="SRISK-Implementation-Guide_files/libs/clipboard/clipboard.min.js"></script>
+<script src="SRISK-Implementation-Guide_files/libs/quarto-html/quarto.js" type="module"></script>
+<script src="SRISK-Implementation-Guide_files/libs/quarto-html/tabsets/tabsets.js" type="module"></script>
+<script src="SRISK-Implementation-Guide_files/libs/quarto-html/axe/axe-check.js" type="module"></script>
+<script src="SRISK-Implementation-Guide_files/libs/quarto-html/popper.min.js"></script>
+<script src="SRISK-Implementation-Guide_files/libs/quarto-html/tippy.umd.min.js"></script>
+<script src="SRISK-Implementation-Guide_files/libs/quarto-html/anchor.min.js"></script>
+<link href="SRISK-Implementation-Guide_files/libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="SRISK-Implementation-Guide_files/libs/quarto-html/quarto-syntax-highlighting-ed96de9b727972fe78a7b5d16c58bf87.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="SRISK-Implementation-Guide_files/libs/bootstrap/bootstrap.min.js"></script>
+<link href="SRISK-Implementation-Guide_files/libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="SRISK-Implementation-Guide_files/libs/bootstrap/bootstrap-d6a003b94517c951b2d65075d42fb01b.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+
+
+</head>
+
+<body class="fullcontent quarto-light">
+
+<div id="quarto-content" class="page-columns page-rows-contents page-layout-article">
+
+<main class="content" id="quarto-document-content">
+
+
+
+
+<section id="srisk-implementation-guide-for-gulf-banking-sector-analysis" class="level1">
+<h1>SRISK Implementation Guide for Gulf Banking Sector Analysis</h1>
+<section id="executive-summary" class="level2">
+<h2 class="anchored" data-anchor-id="executive-summary">Executive Summary</h2>
+<p>SRISK (Systemic Risk) measures the <strong>expected capital shortfall</strong> of a financial institution conditional on a severe market decline. It quantifies how much capital a bank would need to maintain minimum prudential requirements during a crisis.</p>
+<p><strong>Key Formula:</strong></p>
+<pre><code>SRISK_i,t = max(0, k × Debt_i,t - (1 - k) × (1 - LRMES_i,t) × Equity_i,t)</code></pre>
+<p>Where: - <strong>k</strong> = Prudential capital ratio (typically 8% under Basel, adjustable to 5.5% for IFRS) - <strong>Debt</strong> = Book value of debt/liabilities - <strong>Equity</strong> = Market value of equity (market capitalization) - <strong>LRMES</strong> = Long-Run Marginal Expected Shortfall (expected equity loss in crisis)</p>
+<p><strong>Interpretation:</strong> - Positive SRISK = Bank undercapitalized in crisis (needs external capital) - Negative SRISK = Bank adequately capitalized (ignored in system aggregation) - Higher SRISK = Greater systemic importance and vulnerability</p>
+<hr>
+</section>
+<section id="conceptual-framework" class="level2">
+<h2 class="anchored" data-anchor-id="conceptual-framework">1. Conceptual Framework</h2>
+<section id="what-srisk-measures" class="level3">
+<h3 class="anchored" data-anchor-id="what-srisk-measures">1.1 What SRISK Measures</h3>
+<p>SRISK answers: <strong>“How much capital would this bank need if we have another financial crisis?”</strong></p>
+<p>It combines three key dimensions: 1. <strong>Size</strong> (larger banks → larger shortfall) 2. <strong>Leverage</strong> (higher debt-to-equity → larger shortfall)<br>
+3. <strong>Risk</strong> (higher correlation with market crashes → larger shortfall)</p>
+</section>
+<section id="the-crisis-scenario" class="level3">
+<h3 class="anchored" data-anchor-id="the-crisis-scenario">1.2 The Crisis Scenario</h3>
+<p><strong>Standard Definition:</strong> - <strong>Horizon (h):</strong> 6 months (22 trading weeks) - <strong>Threshold (C):</strong> -40% decline in broad market index - <strong>Interpretation:</strong> If the market falls 40% over 6 months, what is bank’s expected capital shortfall?</p>
+</section>
+</section>
+<section id="mathematical-framework" class="level2">
+<h2 class="anchored" data-anchor-id="mathematical-framework">2. Mathematical Framework</h2>
+<section id="core-equations" class="level3">
+<h3 class="anchored" data-anchor-id="core-equations">2.1 Core Equations</h3>
+<p><strong>Step 1: Capital Shortfall</strong></p>
+<pre><code>CS_i,t+h = k × A_i,t+h - W_i,t+h</code></pre>
+<p>Where: - A_i,t+h = Quasi-assets = Debt + Equity at t+h - W_i,t+h = Market equity value at t+h - k = Prudential capital fraction (0.08)</p>
+<p><strong>Step 2: SRISK Conditional on Crisis</strong></p>
+<pre><code>SRISK_i,t = E_t[CS_i,t+h | R_m,t:t+h &lt; -40%]</code></pre>
+<p><strong>Step 3: Decomposition (assuming debt constant)</strong></p>
+<pre><code>SRISK_i,t = k × Debt_i,t - (1 - k) × (1 - LRMES_i,t) × Equity_i,t</code></pre>
+<p><strong>Step 4: Long-Run MES (LRMES)</strong></p>
+<pre><code>LRMES_i,t = E_t[1 - W_i,t+h/W_i,t | R_m,t:t+h &lt; -40%]
+            = 1 - E_t[exp(r_i,t:t+h) | R_m,t:t+h &lt; -40%]</code></pre>
+<p>Where r_i,t:t+h is cumulative log return over horizon h.</p>
+</section>
+<section id="system-wide-aggregation" class="level3">
+<h3 class="anchored" data-anchor-id="system-wide-aggregation">2.2 System-Wide Aggregation</h3>
+<p><strong>Total Systemic Risk:</strong></p>
+<pre><code>SRISK_system,t = Σ max(0, SRISK_i,t)  for all banks i</code></pre>
+<p><strong>Important:</strong> Only sum <strong>positive</strong> SRISK values. Banks with negative SRISK (capital surplus) are excluded—capital cannot be easily mobilized across institutions in crisis.</p>
+<p><strong>Bank’s Contribution:</strong></p>
+<pre><code>Contribution_%_i,t = SRISK_i,t / SRISK_system,t × 100%</code></pre>
+</section>
+<section id="lrmes-estimation-via-garch-dcc" class="level3">
+<h3 class="anchored" data-anchor-id="lrmes-estimation-via-garch-dcc">2.3 LRMES Estimation via GARCH-DCC</h3>
+<p>The critical component is estimating LRMES. The standard approach uses <strong>bivariate GJR-GARCH(1,1) with Dynamic Conditional Correlation (DCC)</strong>.</p>
+<p><strong>Return Model:</strong></p>
+<pre><code>r_i,t = μ_i + ε_i,t
+r_m,t = μ_m + ε_m,t
+
+where ε_i,t = σ_i,t × z_i,t
+      ε_m,t = σ_m,t × z_m,t</code></pre>
+<p><strong>Volatility (GJR-GARCH):</strong></p>
+<pre><code>σ²_i,t = ω_i + α_i ε²_i,t-1 + γ_i I[ε_i,t-1&lt;0] ε²_i,t-1 + β_i σ²_i,t-1</code></pre>
+<p>Where I[·] is indicator for asymmetric (leverage) effect.</p>
+<p><strong>Dynamic Correlation (DCC):</strong></p>
+<pre><code>Q_t = (1 - a - b) Q̄ + a (z_t-1 z'_t-1) + b Q_t-1
+R_t = diag(Q_t)^(-1/2) Q_t diag(Q_t)^(-1/2)</code></pre>
+<p>Where R_t is time-varying correlation matrix.</p>
+<p><strong>LRMES Computation:</strong></p>
+<pre><code>LRMES_i,t = 1 - E_t[exp(Σ r_i,s) | Σ r_m,s &lt; -40%]</code></pre>
+<p>Estimated via <strong>Monte Carlo simulation</strong> (50,000+ paths): 1. Generate h-step ahead returns using GARCH-DCC 2. Keep only paths where R_m,t:t+h &lt; -40% 3. Average firm equity decline across crisis scenarios</p>
+<hr>
+</section>
+</section>
+<section id="data-requirements" class="level2">
+<h2 class="anchored" data-anchor-id="data-requirements">3. Data Requirements</h2>
+<section id="market-data-daily-frequency" class="level3">
+<h3 class="anchored" data-anchor-id="market-data-daily-frequency">3.1 Market Data (Daily Frequency)</h3>
+<p><strong>For Each Bank:</strong> - <strong>Stock prices</strong> (adjusted for splits/dividends) - <strong>Shares outstanding</strong> → Market cap = Price × Shares</p>
+<p><strong>For Benchmark Index:</strong> - <strong>GCC Composite Index</strong> or <strong>country-specific banking index</strong></p>
+<p><strong>Time Period:</strong> - <strong>Minimum:</strong> 252 trading days (~1 year) - <strong>Recommended:</strong> 1,000+ days (~4 years) for stable GARCH estimates - <strong>Rolling window:</strong> Update daily/weekly with expanding or 3-5 year rolling window</p>
+</section>
+<section id="balance-sheet-data-quarterlyannual" class="level3">
+<h3 class="anchored" data-anchor-id="balance-sheet-data-quarterlyannual">3.2 Balance Sheet Data (Quarterly/Annual)</h3>
+<p><strong>Required:</strong> - <strong>Total Debt/Liabilities</strong> (book value): D_i,t - <strong>Market value of Equity:</strong> W_i,t = Price × Shares - <strong>Quasi-Leverage Ratio:</strong> LVG = (Debt + Equity) / Equity</p>
+<p><strong>Frequency:</strong> - Balance sheet: Quarterly - Interpolate between reporting dates (assume constant until next release)</p>
+</section>
+<section id="gulf-region-specifics" class="level3">
+<h3 class="anchored" data-anchor-id="gulf-region-specifics">3.3 Gulf Region Specifics</h3>
+<p><strong>Listed Banks by Country (approx counts):</strong> - <strong>Saudi Arabia:</strong> ~10 listed banks (dominant weight) - <strong>UAE:</strong> ~8 banks (Abu Dhabi, Dubai markets) - <strong>Qatar:</strong> ~4 banks - <strong>Kuwait:</strong> ~8 banks - <strong>Bahrain:</strong> ~5 banks - <strong>Oman:</strong> ~3 banks</p>
+<p><strong>Total:</strong> ~40 listed banks in GCC region</p>
+</section>
+</section>
+<section id="numerical-issues-and-pitfalls" class="level2">
+<h2 class="anchored" data-anchor-id="numerical-issues-and-pitfalls">5. Numerical Issues and Pitfalls</h2>
+<section id="dcc-estimation-challenges" class="level3">
+<h3 class="anchored" data-anchor-id="dcc-estimation-challenges">5.2 DCC Estimation Challenges</h3>
+<p><strong>Problem:</strong> DCC correlation matrix not positive definite</p>
+<p><strong>Solutions:</strong> - Impose constraints: a + b &lt; 1, both &gt; 0 - Use Ledoit-Wolf shrinkage for Q̄ (unconditional correlation) - Check if standardized residuals are truly standardized (mean 0, var 1) - Consider simpler CCC (constant correlation) if DCC fails</p>
+</section>
+<section id="sparse-crisis-scenarios" class="level3">
+<h3 class="anchored" data-anchor-id="sparse-crisis-scenarios">5.4 Sparse Crisis Scenarios</h3>
+<p><strong>Problem:</strong> Too few simulations meet crisis threshold (R_m &lt; -40%)</p>
+<p><strong>Typical:</strong> 5-10% of simulations → ~2,500-5,000 crisis paths out of 50,000</p>
+<p><strong>If fewer than 500 crisis scenarios:</strong> - Increase n_sim to 100,000 - Consider less extreme threshold (-30% instead of -40%) - Check if market volatility is too low (market calm → few crises simulated) - Use importance sampling (bias simulations toward tail)</p>
+<p><strong>-40% may be too extreme for Gulf markets:</strong> - Check historical GCC index drawdowns - Largest decline in sample - Consider <strong>regional calibration:</strong> Use 5th percentile of historical 6-month returns</p>
+</section>
+</section>
+<section id="optimal-presentation-and-outputs" class="level2">
+<h2 class="anchored" data-anchor-id="optimal-presentation-and-outputs">6. Optimal Presentation and Outputs</h2>
+<section id="for-senior-management-executive-dashboard" class="level3">
+<h3 class="anchored" data-anchor-id="for-senior-management-executive-dashboard">6.1 For Senior Management (Executive Dashboard)</h3>
+<p><strong>Key Metrics:</strong> 1. <strong>System-Wide SRISK</strong> - Total capital shortfall (USD billions or % of GDP) - Time series plot (monthly/quarterly) with crisis periods highlighted - Traffic light: Green (&lt;2% GDP), Yellow (2-5%), Red (&gt;5%)</p>
+<ol start="2" type="1">
+<li><strong>Top 10 Systemically Important Banks</strong>
+<ul>
+<li>Ranked table with SRISK, % contribution, trend arrows</li>
+<li>Breakdown: Size effect vs Leverage effect vs Risk effect</li>
+</ul></li>
+<li><strong>Heatmap by Country</strong>
+<ul>
+<li>GCC countries × Time periods</li>
+<li>Color intensity = SRISK contribution</li>
+</ul></li>
+<li><strong>Leading Indicators</strong>
+<ul>
+<li>Change in aggregate SRISK (ΔSRISKₜ - ΔSRISKₜ₋₁)</li>
+<li>Correlation with macro indicators (oil prices, credit growth)</li>
+</ul></li>
+</ol>
+</section>
+<section id="technical-report-for-analysts" class="level3">
+<h3 class="anchored" data-anchor-id="technical-report-for-analysts">6.2 Technical Report (For Analysts)</h3>
+<p><strong>Section 1: Executive Summary</strong> - Current system SRISK and change from previous quarter - Top 5 banks and their contributions - Key drivers (leverage increases, equity declines, volatility spikes)</p>
+<p><strong>Section 2: Individual Bank Profiles</strong> For each bank: - SRISK level and ranking - LRMES (expected equity loss in crisis) - Leverage ratio (Debt/Equity) - Market beta and correlation with GCC index - 12-month trend chart</p>
+<p><strong>Section 3: Decomposition Analysis</strong></p>
+<pre><code>ΔSRISK = ΔSize effect + ΔLeverage effect + ΔRisk effect</code></pre>
+<p>Quantify contribution of each factor to changes in SRISK.</p>
+<p><strong>Section 4: Scenario Analysis</strong> - Alternative benchmarks (global vs regional index)</p>
+<p><strong>Section 5: Cross-Country Comparison</strong> - SRISK by country</p>
+<p><strong>Section 6: Model Diagnostics</strong> - GARCH parameter estimates and standard errors - DCC correlation dynamics (plot ρₜ over time) - Goodness-of-fit: Ljung-Box tests on standardized residuals - Monte Carlo convergence checks</p>
+</section>
+</section>
+</section>
+
+</main>
+<!-- /main column -->
+<script id="quarto-html-after-body" type="application/javascript">
+  window.document.addEventListener("DOMContentLoaded", function (event) {
+    const icon = "";
+    const anchorJS = new window.AnchorJS();
+    anchorJS.options = {
+      placement: 'right',
+      icon: icon
+    };
+    anchorJS.add('.anchored');
+    const isCodeAnnotation = (el) => {
+      for (const clz of el.classList) {
+        if (clz.startsWith('code-annotation-')) {                     
+          return true;
+        }
+      }
+      return false;
+    }
+    const onCopySuccess = function(e) {
+      // button target
+      const button = e.trigger;
+      // don't keep focus
+      button.blur();
+      // flash "checked"
+      button.classList.add('code-copy-button-checked');
+      var currentTitle = button.getAttribute("title");
+      button.setAttribute("title", "Copied!");
+      let tooltip;
+      if (window.bootstrap) {
+        button.setAttribute("data-bs-toggle", "tooltip");
+        button.setAttribute("data-bs-placement", "left");
+        button.setAttribute("data-bs-title", "Copied!");
+        tooltip = new bootstrap.Tooltip(button, 
+          { trigger: "manual", 
+            customClass: "code-copy-button-tooltip",
+            offset: [0, -8]});
+        tooltip.show();    
+      }
+      setTimeout(function() {
+        if (tooltip) {
+          tooltip.hide();
+          button.removeAttribute("data-bs-title");
+          button.removeAttribute("data-bs-toggle");
+          button.removeAttribute("data-bs-placement");
+        }
+        button.setAttribute("title", currentTitle);
+        button.classList.remove('code-copy-button-checked');
+      }, 1000);
+      // clear code selection
+      e.clearSelection();
+    }
+    const getTextToCopy = function(trigger) {
+      const outerScaffold = trigger.parentElement.cloneNode(true);
+      const codeEl = outerScaffold.querySelector('code');
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+    }
+    const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+      text: getTextToCopy
+    });
+    clipboard.on('success', onCopySuccess);
+    if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+      const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+        text: getTextToCopy,
+        container: window.document.getElementById('quarto-embedded-source-code-modal')
+      });
+      clipboardModal.on('success', onCopySuccess);
+    }
+      var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+      var mailtoRegex = new RegExp(/^mailto:/);
+        var filterRegex = new RegExp('/' + window.location.host + '/');
+      var isInternal = (href) => {
+          return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+      }
+      // Inspect non-navigation links and adorn them if external
+     var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+      for (var i=0; i<links.length; i++) {
+        const link = links[i];
+        if (!isInternal(link.href)) {
+          // undo the damage that might have been done by quarto-nav.js in the case of
+          // links that we want to consider external
+          if (link.dataset.originalHref !== undefined) {
+            link.href = link.dataset.originalHref;
+          }
+        }
+      }
+    function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+      const config = {
+        allowHTML: true,
+        maxWidth: 500,
+        delay: 100,
+        arrow: false,
+        appendTo: function(el) {
+            return el.parentElement;
+        },
+        interactive: true,
+        interactiveBorder: 10,
+        theme: 'quarto',
+        placement: 'bottom-start',
+      };
+      if (contentFn) {
+        config.content = contentFn;
+      }
+      if (onTriggerFn) {
+        config.onTrigger = onTriggerFn;
+      }
+      if (onUntriggerFn) {
+        config.onUntrigger = onUntriggerFn;
+      }
+      window.tippy(el, config); 
+    }
+    const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+    for (var i=0; i<noterefs.length; i++) {
+      const ref = noterefs[i];
+      tippyHover(ref, function() {
+        // use id or data attribute instead here
+        let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+        try { href = new URL(href).hash; } catch {}
+        const id = href.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note) {
+          return note.innerHTML;
+        } else {
+          return "";
+        }
+      });
+    }
+    const xrefs = window.document.querySelectorAll('a.quarto-xref');
+    const processXRef = (id, note) => {
+      // Strip column container classes
+      const stripColumnClz = (el) => {
+        el.classList.remove("page-full", "page-columns");
+        if (el.children) {
+          for (const child of el.children) {
+            stripColumnClz(child);
+          }
+        }
+      }
+      stripColumnClz(note)
+      if (id === null || id.startsWith('sec-')) {
+        // Special case sections, only their first couple elements
+        const container = document.createElement("div");
+        if (note.children && note.children.length > 2) {
+          container.appendChild(note.children[0].cloneNode(true));
+          for (let i = 1; i < note.children.length; i++) {
+            const child = note.children[i];
+            if (child.tagName === "P" && child.innerText === "") {
+              continue;
+            } else {
+              container.appendChild(child.cloneNode(true));
+              break;
+            }
+          }
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(container);
+          }
+          return container.innerHTML
+        } else {
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(note);
+          }
+          return note.innerHTML;
+        }
+      } else {
+        // Remove any anchor links if they are present
+        const anchorLink = note.querySelector('a.anchorjs-link');
+        if (anchorLink) {
+          anchorLink.remove();
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        if (note.classList.contains("callout")) {
+          return note.outerHTML;
+        } else {
+          return note.innerHTML;
+        }
+      }
+    }
+    for (var i=0; i<xrefs.length; i++) {
+      const xref = xrefs[i];
+      tippyHover(xref, undefined, function(instance) {
+        instance.disable();
+        let url = xref.getAttribute('href');
+        let hash = undefined; 
+        if (url.startsWith('#')) {
+          hash = url;
+        } else {
+          try { hash = new URL(url).hash; } catch {}
+        }
+        if (hash) {
+          const id = hash.replace(/^#\/?/, "");
+          const note = window.document.getElementById(id);
+          if (note !== null) {
+            try {
+              const html = processXRef(id, note.cloneNode(true));
+              instance.setContent(html);
+            } finally {
+              instance.enable();
+              instance.show();
+            }
+          } else {
+            // See if we can fetch this
+            fetch(url.split('#')[0])
+            .then(res => res.text())
+            .then(html => {
+              const parser = new DOMParser();
+              const htmlDoc = parser.parseFromString(html, "text/html");
+              const note = htmlDoc.getElementById(id);
+              if (note !== null) {
+                const html = processXRef(id, note);
+                instance.setContent(html);
+              } 
+            }).finally(() => {
+              instance.enable();
+              instance.show();
+            });
+          }
+        } else {
+          // See if we can fetch a full url (with no hash to target)
+          // This is a special case and we should probably do some content thinning / targeting
+          fetch(url)
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.querySelector('main.content');
+            if (note !== null) {
+              // This should only happen for chapter cross references
+              // (since there is no id in the URL)
+              // remove the first header
+              if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+                note.children[0].remove();
+              }
+              const html = processXRef(null, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      }, function(instance) {
+      });
+    }
+        let selectedAnnoteEl;
+        const selectorForAnnotation = ( cell, annotation) => {
+          let cellAttr = 'data-code-cell="' + cell + '"';
+          let lineAttr = 'data-code-annotation="' +  annotation + '"';
+          const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+          return selector;
+        }
+        const selectCodeLines = (annoteEl) => {
+          const doc = window.document;
+          const targetCell = annoteEl.getAttribute("data-target-cell");
+          const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+          const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+          const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+          const lineIds = lines.map((line) => {
+            return targetCell + "-" + line;
+          })
+          let top = null;
+          let height = null;
+          let parent = null;
+          if (lineIds.length > 0) {
+              //compute the position of the single el (top and bottom and make a div)
+              const el = window.document.getElementById(lineIds[0]);
+              top = el.offsetTop;
+              height = el.offsetHeight;
+              parent = el.parentElement.parentElement;
+            if (lineIds.length > 1) {
+              const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+              const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+              height = bottom - top;
+            }
+            if (top !== null && height !== null && parent !== null) {
+              // cook up a div (if necessary) and position it 
+              let div = window.document.getElementById("code-annotation-line-highlight");
+              if (div === null) {
+                div = window.document.createElement("div");
+                div.setAttribute("id", "code-annotation-line-highlight");
+                div.style.position = 'absolute';
+                parent.appendChild(div);
+              }
+              div.style.top = top - 2 + "px";
+              div.style.height = height + 4 + "px";
+              div.style.left = 0;
+              let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+              if (gutterDiv === null) {
+                gutterDiv = window.document.createElement("div");
+                gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+                gutterDiv.style.position = 'absolute';
+                const codeCell = window.document.getElementById(targetCell);
+                const gutter = codeCell.querySelector('.code-annotation-gutter');
+                gutter.appendChild(gutterDiv);
+              }
+              gutterDiv.style.top = top - 2 + "px";
+              gutterDiv.style.height = height + 4 + "px";
+            }
+            selectedAnnoteEl = annoteEl;
+          }
+        };
+        const unselectCodeLines = () => {
+          const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+          elementsIds.forEach((elId) => {
+            const div = window.document.getElementById(elId);
+            if (div) {
+              div.remove();
+            }
+          });
+          selectedAnnoteEl = undefined;
+        };
+          // Handle positioning of the toggle
+      window.addEventListener(
+        "resize",
+        throttle(() => {
+          elRect = undefined;
+          if (selectedAnnoteEl) {
+            selectCodeLines(selectedAnnoteEl);
+          }
+        }, 10)
+      );
+      function throttle(fn, ms) {
+      let throttle = false;
+      let timer;
+        return (...args) => {
+          if(!throttle) { // first call gets through
+              fn.apply(this, args);
+              throttle = true;
+          } else { // all the others get throttled
+              if(timer) clearTimeout(timer); // cancel #2
+              timer = setTimeout(() => {
+                fn.apply(this, args);
+                timer = throttle = false;
+              }, ms);
+          }
+        };
+      }
+        // Attach click handler to the DT
+        const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+        for (const annoteDlNode of annoteDls) {
+          annoteDlNode.addEventListener('click', (event) => {
+            const clickedEl = event.target;
+            if (clickedEl !== selectedAnnoteEl) {
+              unselectCodeLines();
+              const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+              if (activeEl) {
+                activeEl.classList.remove('code-annotation-active');
+              }
+              selectCodeLines(clickedEl);
+              clickedEl.classList.add('code-annotation-active');
+            } else {
+              // Unselect the line
+              unselectCodeLines();
+              clickedEl.classList.remove('code-annotation-active');
+            }
+          });
+        }
+    const findCites = (el) => {
+      const parentEl = el.parentElement;
+      if (parentEl) {
+        const cites = parentEl.dataset.cites;
+        if (cites) {
+          return {
+            el,
+            cites: cites.split(' ')
+          };
+        } else {
+          return findCites(el.parentElement)
+        }
+      } else {
+        return undefined;
+      }
+    };
+    var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+    for (var i=0; i<bibliorefs.length; i++) {
+      const ref = bibliorefs[i];
+      const citeInfo = findCites(ref);
+      if (citeInfo) {
+        tippyHover(citeInfo.el, function() {
+          var popup = window.document.createElement('div');
+          citeInfo.cites.forEach(function(cite) {
+            var citeDiv = window.document.createElement('div');
+            citeDiv.classList.add('hanging-indent');
+            citeDiv.classList.add('csl-entry');
+            var biblioDiv = window.document.getElementById('ref-' + cite);
+            if (biblioDiv) {
+              citeDiv.innerHTML = biblioDiv.innerHTML;
+            }
+            popup.appendChild(citeDiv);
+          });
+          return popup.innerHTML;
+        });
+      }
+    }
+  });
+  </script>
+</div> <!-- /content -->
+
+
+
+
+</body></html>
