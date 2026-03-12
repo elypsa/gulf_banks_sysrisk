@@ -9,8 +9,14 @@ wheels/
 # Virtual environments
 .venv
 
-data/
-
 # Generated HTML outputs
 *.html
 *_files/
+
+
+# Ignore everything in the data directory
+data/**/*
+
+# But do not ignore the data directory itself (important for Git to process its contents)
+!src/data
+
