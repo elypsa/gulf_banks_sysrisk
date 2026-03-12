@@ -4,11 +4,13 @@
 This script implements Phase 4 of the SRISK pipeline:
 1. Load processed data (aligned debt + equity)
 2. Load LRMES estimates from Phase 3
-3. Calculate SRISK with dual capital ratios (k=8% Basel, k=5.5% IFRS)
+3. Calculate SRISK using configured capital ratio
 4. Perform decomposition analysis (size, leverage, risk effects)
 5. Calculate system-wide SRISK and country aggregates
 6. Generate summary statistics
 7. Save results for reporting
+
+Capital ratio can be adjusted in src/utils/config.py (CONFIG.CAPITAL_RATIO_BASEL)
 
 Usage:
     uv run scripts/04_calculate_srisk.py
@@ -22,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.data import load_dataframe, save_dataframe
 from src.models.srisk import (
-    calculate_srisk_dual_capital_ratios,
+    calculate_srisk_multi,
     calculate_system_srisk,
     calculate_srisk_contribution,
     srisk_summary_statistics,
@@ -50,7 +52,7 @@ def load_required_data():
     # Convert LRMES from single-row to time series (broadcast to all dates)
     # Note: In the current implementation, LRMES is constant over time
     # For time-varying LRMES, this would use the full time series
-    lrmes_values = dict(zip(lrmes_df["instrument"], lrmes_df["lrmes"]))
+    lrmes_values = dict(zip(lrmes_df["bank_ric"], lrmes_df["lrmes"]))
 
     # Create time series DataFrame
     lrmes_ts = pd.DataFrame(
@@ -62,128 +64,109 @@ def load_required_data():
 
 
 def calculate_srisk_models(aligned_data, lrmes_ts, bank_universe):
-    """Calculate SRISK with dual capital ratios."""
+    """Calculate SRISK using configured capital ratio."""
     print("\n" + "=" * 60)
     print("CALCULATING SRISK")
     print("=" * 60)
-    print(f"Capital ratio (Basel): {CONFIG.CAPITAL_RATIO_BASEL * 100:.1f}%")
-    print(f"Capital ratio (IFRS): {CONFIG.CAPITAL_RATIO_IFRS * 100:.1f}%")
+    print(f"Capital ratio: {CONFIG.CAPITAL_RATIO_BASEL * 100:.1f}%")
     print()
 
-    # Calculate with both capital ratios
-    srisk_basel, srisk_ifrs = calculate_srisk_dual_capital_ratios(
+    # Calculate SRISK
+    srisk = calculate_srisk_multi(
         aligned_data=aligned_data,
         lrmes_df=lrmes_ts,
         bank_universe=bank_universe,
-        k_basel=CONFIG.CAPITAL_RATIO_BASEL,
-        k_ifrs=CONFIG.CAPITAL_RATIO_IFRS
+        k=CONFIG.CAPITAL_RATIO_BASEL
     )
 
-    print(f"✓ SRISK calculated for {len(srisk_basel.columns)} banks")
-    print(f"  - Basel (k=8%): {srisk_basel.shape}")
-    print(f"  - IFRS (k=5.5%): {srisk_ifrs.shape}")
+    print(f"✓ SRISK calculated for {len(srisk.columns)} banks")
+    print(f"  Shape: {srisk.shape}")
 
     # Save SRISK time series
-    save_dataframe(srisk_basel, "srisk_basel", RESULTS_DATA_DIR, {
-        "description": "SRISK time series (Basel k=8%)",
-        "capital_ratio": CONFIG.CAPITAL_RATIO_BASEL
+    save_dataframe(srisk, "srisk_timeseries", RESULTS_DATA_DIR, {
+        "description": f"SRISK time series (k={CONFIG.CAPITAL_RATIO_BASEL*100:.1f}%)",
+        "capital_ratio": CONFIG.CAPITAL_RATIO_BASEL,
+        "crisis_threshold": CONFIG.CRISIS_THRESHOLD,
+        "horizon_weeks": CONFIG.CRISIS_HORIZON_WEEKS
     })
 
-    save_dataframe(srisk_ifrs, "srisk_ifrs", RESULTS_DATA_DIR, {
-        "description": "SRISK time series (IFRS k=5.5%)",
-        "capital_ratio": CONFIG.CAPITAL_RATIO_IFRS
-    })
-
-    return srisk_basel, srisk_ifrs
+    return srisk
 
 
-def calculate_system_aggregates(srisk_basel, srisk_ifrs):
+def calculate_system_aggregates(srisk):
     """Calculate system-wide SRISK and contributions."""
     print("\n" + "=" * 60)
     print("SYSTEM-WIDE AGGREGATION")
     print("=" * 60)
 
     # System SRISK
-    system_basel = calculate_system_srisk(srisk_basel)
-    system_ifrs = calculate_system_srisk(srisk_ifrs)
+    system_srisk = calculate_system_srisk(srisk)
 
-    print(f"\nLatest System SRISK:")
-    print(f"  - Basel (k=8%): ${system_basel.iloc[-1] / 1e9:.2f}B")
-    print(f"  - IFRS (k=5.5%): ${system_ifrs.iloc[-1] / 1e9:.2f}B")
-    print(f"  - Difference: ${(system_basel.iloc[-1] - system_ifrs.iloc[-1]) / 1e9:.2f}B")
+    print(f"\nSystem SRISK (k={CONFIG.CAPITAL_RATIO_BASEL*100:.1f}%):")
+    print(f"  Latest: ${system_srisk.iloc[-1] / 1e9:.2f}B")
+    print(f"  Mean: ${system_srisk.mean() / 1e9:.2f}B")
+    print(f"  Max: ${system_srisk.max() / 1e9:.2f}B")
 
     # Contributions
-    contrib_basel = calculate_srisk_contribution(srisk_basel)
-    contrib_ifrs = calculate_srisk_contribution(srisk_ifrs)
+    contributions = calculate_srisk_contribution(srisk)
 
-    print(f"\nTop 5 contributors (Basel, latest):")
-    latest_contrib = contrib_basel.iloc[-1].sort_values(ascending=False).head()
+    print(f"\nTop 5 contributors (latest):")
+    latest_contrib = contributions.iloc[-1].sort_values(ascending=False).head()
     for bank, pct in latest_contrib.items():
         print(f"  - {bank}: {pct:.2f}%")
 
     # Save system aggregates
-    system_df = pd.DataFrame({
-        "basel_k8": system_basel,
-        "ifrs_k5.5": system_ifrs
-    })
-    save_dataframe(system_df, "system_srisk", RESULTS_DATA_DIR, {
-        "description": "System-wide SRISK (sum of positive SRISK)"
+    save_dataframe(system_srisk, "system_srisk", RESULTS_DATA_DIR, {
+        "description": "System-wide SRISK (sum of positive SRISK)",
+        "capital_ratio": CONFIG.CAPITAL_RATIO_BASEL
     })
 
-    save_dataframe(contrib_basel, "contributions_basel", RESULTS_DATA_DIR, {
-        "description": "Bank contributions to system SRISK (%)"
+    save_dataframe(contributions, "srisk_contributions", RESULTS_DATA_DIR, {
+        "description": "Bank contributions to system SRISK (%)",
+        "capital_ratio": CONFIG.CAPITAL_RATIO_BASEL
     })
 
-    return system_basel, system_ifrs, contrib_basel
+    return system_srisk, contributions
 
 
-def generate_summary_statistics(srisk_basel, srisk_ifrs, bank_universe):
+def generate_summary_statistics(srisk, bank_universe):
     """Generate summary statistics."""
     print("\n" + "=" * 60)
     print("SUMMARY STATISTICS")
     print("=" * 60)
 
-    # Basel summary
-    summary_basel = srisk_summary_statistics(srisk_basel, bank_universe)
-    print(f"\nTop 10 banks by mean SRISK (Basel):")
-    print(summary_basel.head(10)[["bank_ric", "country", "mean_srisk", "latest_srisk"]].to_string(index=False))
+    # Summary statistics
+    summary = srisk_summary_statistics(srisk, bank_universe)
+    print(f"\nTop 10 banks by mean SRISK:")
+    print(summary.head(10)[["bank_ric", "country", "mean_srisk", "latest_srisk"]].to_string(index=False))
 
-    save_dataframe(summary_basel, "srisk_summary_basel", RESULTS_DATA_DIR, {
-        "description": "SRISK summary statistics (Basel k=8%)"
+    save_dataframe(summary, "srisk_summary", RESULTS_DATA_DIR, {
+        "description": f"SRISK summary statistics (k={CONFIG.CAPITAL_RATIO_BASEL*100:.1f}%)",
+        "capital_ratio": CONFIG.CAPITAL_RATIO_BASEL
     })
 
-    # IFRS summary
-    summary_ifrs = srisk_summary_statistics(srisk_ifrs, bank_universe)
-    save_dataframe(summary_ifrs, "srisk_summary_ifrs", RESULTS_DATA_DIR, {
-        "description": "SRISK summary statistics (IFRS k=5.5%)"
-    })
-
-    return summary_basel, summary_ifrs
+    return summary
 
 
-def calculate_country_aggregates(srisk_basel, srisk_ifrs, bank_universe):
+def calculate_country_aggregates(srisk, bank_universe):
     """Calculate country-level SRISK."""
     print("\n" + "=" * 60)
     print("COUNTRY AGGREGATION")
     print("=" * 60)
 
-    country_basel = calculate_srisk_by_country(srisk_basel, bank_universe)
-    country_ifrs = calculate_srisk_by_country(srisk_ifrs, bank_universe)
+    country_srisk = calculate_srisk_by_country(srisk, bank_universe)
 
-    print(f"\nSRISK by country (Basel, latest):")
-    latest_country = country_basel.iloc[-1].sort_values(ascending=False)
-    for country, srisk in latest_country.items():
-        print(f"  - {country}: ${srisk / 1e9:.2f}B")
+    print(f"\nSRISK by country (latest):")
+    latest_country = country_srisk.iloc[-1].sort_values(ascending=False)
+    for country, srisk_val in latest_country.items():
+        print(f"  - {country}: ${srisk_val / 1e9:.2f}B")
 
-    save_dataframe(country_basel, "srisk_by_country_basel", RESULTS_DATA_DIR, {
-        "description": "SRISK aggregated by country (Basel)"
+    save_dataframe(country_srisk, "srisk_by_country", RESULTS_DATA_DIR, {
+        "description": f"SRISK aggregated by country (k={CONFIG.CAPITAL_RATIO_BASEL*100:.1f}%)",
+        "capital_ratio": CONFIG.CAPITAL_RATIO_BASEL
     })
 
-    save_dataframe(country_ifrs, "srisk_by_country_ifrs", RESULTS_DATA_DIR, {
-        "description": "SRISK aggregated by country (IFRS)"
-    })
-
-    return country_basel
+    return country_srisk
 
 
 def perform_decomposition_analysis(aligned_data, lrmes_ts, bank_universe):
@@ -194,8 +177,8 @@ def perform_decomposition_analysis(aligned_data, lrmes_ts, bank_universe):
     print("Analyzing top 5 banks by latest SRISK...")
 
     # Load SRISK to identify top banks
-    srisk_basel = load_dataframe("srisk_basel", RESULTS_DATA_DIR)
-    top_banks = srisk_basel.iloc[-1].sort_values(ascending=False).head(5).index.tolist()
+    srisk = load_dataframe("srisk_timeseries", RESULTS_DATA_DIR)
+    top_banks = srisk.iloc[-1].sort_values(ascending=False).head(5).index.tolist()
 
     decomp_results = []
 
@@ -224,7 +207,8 @@ def perform_decomposition_analysis(aligned_data, lrmes_ts, bank_universe):
     print(decomp_df.to_string(index=False))
 
     save_dataframe(decomp_df, "srisk_decomposition", RESULTS_DATA_DIR, {
-        "description": "SRISK decomposition (size, leverage, risk effects)"
+        "description": "SRISK decomposition (size, leverage, risk effects)",
+        "capital_ratio": CONFIG.CAPITAL_RATIO_BASEL
     })
 
 
@@ -239,16 +223,16 @@ def main():
         aligned_data, lrmes_ts, bank_universe = load_required_data()
 
         # 2. Calculate SRISK
-        srisk_basel, srisk_ifrs = calculate_srisk_models(aligned_data, lrmes_ts, bank_universe)
+        srisk = calculate_srisk_models(aligned_data, lrmes_ts, bank_universe)
 
         # 3. System aggregates
-        system_basel, system_ifrs, contrib_basel = calculate_system_aggregates(srisk_basel, srisk_ifrs)
+        system_srisk, contributions = calculate_system_aggregates(srisk)
 
         # 4. Summary statistics
-        summary_basel, summary_ifrs = generate_summary_statistics(srisk_basel, srisk_ifrs, bank_universe)
+        summary = generate_summary_statistics(srisk, bank_universe)
 
         # 5. Country aggregates
-        country_basel = calculate_country_aggregates(srisk_basel, srisk_ifrs, bank_universe)
+        country_srisk = calculate_country_aggregates(srisk, bank_universe)
 
         # 6. Decomposition
         perform_decomposition_analysis(aligned_data, lrmes_ts, bank_universe)
@@ -257,18 +241,21 @@ def main():
         print("\n" + "=" * 60)
         print("✓ SRISK CALCULATION COMPLETED")
         print("=" * 60)
+        print(f"\nCapital ratio used: {CONFIG.CAPITAL_RATIO_BASEL*100:.1f}%")
+        print(f"Crisis threshold: {CONFIG.CRISIS_THRESHOLD*100:.1f}% market decline")
+        print(f"Horizon: {CONFIG.CRISIS_HORIZON_WEEKS} weeks")
         print(f"\nResults saved to: {RESULTS_DATA_DIR}")
         print("\nKey outputs:")
-        print("  - srisk_basel.parquet - SRISK time series (Basel k=8%)")
-        print("  - srisk_ifrs.parquet - SRISK time series (IFRS k=5.5%)")
+        print("  - srisk_timeseries.parquet - SRISK time series")
         print("  - system_srisk.parquet - System-wide SRISK")
-        print("  - srisk_summary_basel.parquet - Summary statistics")
-        print("  - srisk_by_country_basel.parquet - Country aggregates")
+        print("  - srisk_contributions.parquet - Bank contributions (%)")
+        print("  - srisk_summary.parquet - Summary statistics")
+        print("  - srisk_by_country.parquet - Country aggregates")
         print("  - srisk_decomposition.parquet - Decomposition analysis")
 
         print("\nNext step:")
         print("  - Review results in data/results/")
-        print("  - Generate reports (Phase 5 - coming soon)")
+        print("  - Generate reports and visualizations")
 
     except Exception as e:
         print(f"\n✗ ERROR: {e}")

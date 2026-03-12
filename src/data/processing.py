@@ -17,13 +17,15 @@ from datetime import timedelta
 def calculate_returns(
     prices: pd.Series,
     method: str = "log",
-    handle_missing: str = "drop"
+    handle_missing: str = "drop",
+    lag: int = 1
 ) -> pd.Series:
     """Calculate returns from price series.
 
     Args:
         prices: Price series with DatetimeIndex.
         method: Return calculation method ('log' or 'simple').
+        lag: Number of periods to lag for return calculation (default 1).
         handle_missing: How to handle NaN ('drop' or 'zero').
 
     Returns:
@@ -38,7 +40,7 @@ def calculate_returns(
         >>> returns = calculate_returns(prices, method='log')
     """
     if method == "log":
-        returns = np.log(prices / prices.shift(1))
+        returns = np.log(prices / prices.shift(lag))
     elif method == "simple":
         returns = prices.pct_change()
     else:
@@ -81,7 +83,7 @@ def calculate_returns_multicolumn(
             if "Price" in str(df[ric].columns) or "Close" in str(df[ric].columns):
                 # Find price column
                 price_col = [col for col in df[ric].columns if "Price" in str(col) or "Close" in str(col)][0]
-                returns = calculate_returns(df[ric][price_col], method, handle_missing)
+                returns = calculate_returns(df[ric][price_col], method, handle_missing, lag = 1)
                 returns.name = (ric, f"{price_col}{suffix}")
                 returns_list.append(returns)
 
@@ -92,7 +94,7 @@ def calculate_returns_multicolumn(
 
     else:
         # Simple columns: Apply to all
-        returns_df = df.apply(lambda col: calculate_returns(col, method, handle_missing))
+        returns_df = df.apply(lambda col: calculate_returns(col, method, handle_missing, lag = 1))
 
         if suffix:
             returns_df.columns = [f"{col}{suffix}" for col in returns_df.columns]

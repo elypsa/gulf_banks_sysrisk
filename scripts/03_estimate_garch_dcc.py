@@ -401,7 +401,66 @@ def main():
         benchmark_name = benchmark_returns.columns[0]
         print(f"\nPrimary benchmark: {benchmark_name}")
 
-        # 3. Estimate benchmark GARCH once (reused for all banks)
+        # 3. Calibrate crisis threshold from historical data
+        print("\n" + "=" * 60)
+        print("CALIBRATING CRISIS THRESHOLD FROM HISTORICAL DATA")
+        print("=" * 60)
+
+        # Calculate rolling 6-month returns for benchmark
+        # Using ~6 months = 22 weeks × 5 days/week ≈ 110-130 trading days
+        rolling_window = min(130, CONFIG.CRISIS_HORIZON_WEEKS * 5)  # Approximately 6 months in trading days
+
+        benchmark_series = benchmark_returns[benchmark_name].dropna()
+
+        print(f"\nBenchmark series: {len(benchmark_series)} observations")
+        print(f"Rolling window: {rolling_window} days")
+
+        # Check if we have enough data
+        if len(benchmark_series) < rolling_window:
+            print(f"\n⚠ WARNING: Insufficient data for crisis calibration")
+            print(f"  Need at least {rolling_window} observations, have {len(benchmark_series)}")
+            print(f"  Skipping historical calibration - using configured threshold: {CONFIG.CRISIS_THRESHOLD*100:.1f}%")
+        else:
+            # Calculate cumulative returns over rolling window
+            rolling_returns = benchmark_series.rolling(window=rolling_window).apply(
+                lambda x: x.sum(), raw=True
+            ).dropna()
+
+            if len(rolling_returns) == 0:
+                print(f"\n⚠ WARNING: Rolling returns calculation produced no valid observations")
+                print(f"  Skipping historical calibration - using configured threshold: {CONFIG.CRISIS_THRESHOLD*100:.1f}%")
+            else:
+                # Calculate percentiles
+                percentile_5 = np.percentile(rolling_returns, 5)
+                percentile_1 = np.percentile(rolling_returns, 1)
+                percentile_10 = np.percentile(rolling_returns, 10)
+                min_return = rolling_returns.min()
+                mean_return = rolling_returns.mean()
+
+                print(f"\nHistorical {rolling_window}-day rolling returns for {benchmark_name}:")
+                print(f"  Observations: {len(rolling_returns)}")
+                print(f"  Mean: {mean_return:.4f} ({(np.exp(mean_return)-1)*100:.2f}%)")
+                print(f"  Minimum: {min_return:.4f} ({(np.exp(min_return)-1)*100:.2f}%)")
+                print(f"  1st percentile: {percentile_1:.4f} ({(np.exp(percentile_1)-1)*100:.2f}%)")
+                print(f"  5th percentile: {percentile_5:.4f} ({(np.exp(percentile_5)-1)*100:.2f}%)")
+                print(f"  10th percentile: {percentile_10:.4f} ({(np.exp(percentile_10)-1)*100:.2f}%)")
+
+                # Compare with configured threshold
+                configured_threshold_log = np.log(1 + CONFIG.CRISIS_THRESHOLD)
+                print(f"\nConfigured crisis threshold: {CONFIG.CRISIS_THRESHOLD*100:.1f}% = {configured_threshold_log:.4f} (log)")
+
+                # Recommendation
+                if configured_threshold_log < percentile_5:
+                    print(f"\n⚠ WARNING: Configured threshold ({CONFIG.CRISIS_THRESHOLD*100:.1f}%) is MORE extreme than 5th percentile")
+                    print(f"  This may result in too few crisis scenarios in simulation.")
+                    print(f"  Consider using 5th percentile: {(np.exp(percentile_5)-1)*100:.1f}%")
+                elif configured_threshold_log > percentile_10:
+                    print(f"\n⚠ WARNING: Configured threshold ({CONFIG.CRISIS_THRESHOLD*100:.1f}%) is LESS extreme than 10th percentile")
+                    print(f"  This may result in too many crisis scenarios.")
+                else:
+                    print(f"\n✓ Configured threshold is within reasonable range (between 5th and 10th percentile)")
+
+        # 4. Estimate benchmark GARCH once (reused for all banks)
         benchmark_garch = estimate_benchmark_garch(benchmark_returns, benchmark_name)
 
         # 4. Simulate common market paths ONCE (all banks evaluated on same scenarios)
