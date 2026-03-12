@@ -162,6 +162,9 @@ Estimated via **Monte Carlo simulation** (50,000+ paths):
 
 **Total:** ~40 listed banks in GCC region
 
+### GCC Calendar & Alignment Rules
+- **Structural Break (UAE):** Be aware that the UAE (DFM/ADX) shifted from a Sunday–Thursday to a Monday–Friday schedule in January 2022. Pre-2022 data must align UAE with the regional Sunday–Thursday pulse.
+
 ## 5. Numerical Issues and Pitfalls
 
 ### 5.2 DCC Estimation Challenges

@@ -8,3 +8,9 @@ wheels/
 
 # Virtual environments
 .venv
+
+data/
+
+# Generated HTML outputs
+*.html
+*_files/
