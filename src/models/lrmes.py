@@ -363,6 +363,308 @@ def nearest_correlation_matrix(A: np.ndarray, max_iter: int = 100) -> np.ndarray
     return X
 
 
+def simulate_market_paths(
+    market_garch_result,
+    horizon: int = 22,
+    n_simulations: int = 50000,
+    random_seed: Optional[int] = None
+) -> Dict[str, np.ndarray]:
+    """Simulate market benchmark paths using GARCH dynamics (ONCE for all banks).
+
+    This generates common market crisis scenarios that all banks will be evaluated against.
+    This is critical for systemic risk measurement where all banks face the SAME market shock.
+
+    Args:
+        market_garch_result: GARCH estimation result for market benchmark.
+        horizon: Forecast horizon in periods (default 22 weeks).
+        n_simulations: Number of Monte Carlo paths.
+        random_seed: Random seed for reproducibility.
+
+    Returns:
+        Dictionary containing:
+            - standardized_shocks: (n_simulations × horizon) array of z_m,t
+            - cumulative_returns: (n_simulations,) array of cumulative market returns
+            - conditional_volatilities: (n_simulations × horizon) array of σ_m,t
+            - innovations: (n_simulations × horizon) array of ε_m,t
+
+    Mathematical formulation:
+        For each path n and step t:
+            z_m,t ~ N(0, 1)
+            ε_m,t = σ_m,t × z_m,t
+            r_m,t = μ_m + ε_m,t
+            σ²_m,t+1 = ω + α ε²_m,t + γ ε²_m,t I[ε_m,t<0] + β σ²_m,t
+
+    Example:
+        >>> market_paths = simulate_market_paths(benchmark_garch, horizon=22, n_sim=50000)
+        >>> # Use same market_paths for all banks
+    """
+    if random_seed is not None:
+        np.random.seed(random_seed)
+
+    # Extract GARCH parameters
+    # NOTE: Parameters are estimated on returns*100 (percentage points)
+    # But conditional_volatility is already scaled back to original scale
+    params = market_garch_result["params"]
+    mu = params.get("mu", 0.0) / 100  # Scale back to log return scale
+    omega = params.get("omega") / (100**2)  # Scale back variance
+    alpha = params.get("alpha[1]")  # Unitless, no scaling needed
+    gamma = params.get("gamma[1]", 0.0)  # Unitless, no scaling needed
+    beta = params.get("beta[1]")  # Unitless, no scaling needed
+
+    # Initial volatility (already in log return scale)
+    sigma_0 = market_garch_result["conditional_volatility"].iloc[-1]
+
+    # Storage
+    z_m = np.zeros((n_simulations, horizon))
+    sigma_m = np.zeros((n_simulations, horizon))
+    eps_m = np.zeros((n_simulations, horizon))
+    returns_m = np.zeros((n_simulations, horizon))
+
+    # Initialize volatility for all paths
+    sigma_current = np.full(n_simulations, sigma_0)
+
+    for t in range(horizon):
+        # Generate standardized shocks (independent across simulations)
+        z_m[:, t] = np.random.randn(n_simulations)
+
+        # Current volatility
+        sigma_m[:, t] = sigma_current
+
+        # Innovation
+        eps_m[:, t] = sigma_current * z_m[:, t]
+
+        # Return
+        returns_m[:, t] = mu + eps_m[:, t]
+
+        # Update volatility for next period (GJR-GARCH)
+        # σ²_{t+1} = ω + α ε²_t + γ ε²_t I[ε_t<0] + β σ²_t
+        eps_sq = eps_m[:, t] ** 2
+        leverage_term = gamma * eps_sq * (eps_m[:, t] < 0)
+
+        sigma_sq_next = omega + alpha * eps_sq + leverage_term + beta * (sigma_current ** 2)
+        sigma_current = np.sqrt(np.maximum(sigma_sq_next, 1e-8))  # Avoid negative variance
+
+    # Cumulative returns
+    cumulative_returns = returns_m.sum(axis=1)
+
+    return {
+        "standardized_shocks": z_m,
+        "cumulative_returns": cumulative_returns,
+        "conditional_volatilities": sigma_m,
+        "innovations": eps_m,
+        "returns": returns_m,
+        "horizon": horizon,
+        "n_simulations": n_simulations
+    }
+
+
+def simulate_bank_conditional_on_market(
+    bank_garch_result,
+    market_paths: Dict,
+    dcc_result: Dict,
+    random_seed: Optional[int] = None
+) -> Dict[str, np.ndarray]:
+    """Simulate bank returns conditional on FIXED market paths.
+
+    This implements the key insight: given the same market crisis scenarios,
+    generate bank-specific returns using the bivariate correlation structure.
+
+    Mathematical formulation (conditional distribution):
+        Given z_m,t (from market_paths), generate z_i,t:
+            z_i,t | z_m,t ~ N(ρ_t × z_m,t, 1 - ρ²_t)
+
+        Where ρ_t is time-varying correlation from DCC.
+
+    Args:
+        bank_garch_result: GARCH estimation result for bank.
+        market_paths: Pre-simulated market paths from simulate_market_paths().
+        dcc_result: DCC estimation result (bivariate: bank-market).
+        random_seed: Random seed for reproducibility.
+
+    Returns:
+        Dictionary containing:
+            - cumulative_returns: (n_simulations,) array of bank cumulative returns
+            - standardized_shocks: (n_simulations × horizon) array of z_i,t
+            - conditional_volatilities: (n_simulations × horizon) array of σ_i,t
+
+    Example:
+        >>> # First, simulate market once
+        >>> market_paths = simulate_market_paths(benchmark_garch, n_sim=50000)
+        >>> # Then simulate each bank conditional on those paths
+        >>> bank_A_paths = simulate_bank_conditional_on_market(bank_A_garch, market_paths, dcc_A)
+        >>> bank_B_paths = simulate_bank_conditional_on_market(bank_B_garch, market_paths, dcc_B)
+    """
+    if random_seed is not None:
+        np.random.seed(random_seed)
+
+    n_simulations = market_paths["n_simulations"]
+    horizon = market_paths["horizon"]
+
+    # Extract bank GARCH parameters
+    # NOTE: Parameters are estimated on returns*100 (percentage points)
+    # But conditional_volatility is already scaled back to original scale
+    params = bank_garch_result["params"]
+    mu_i = params.get("mu", 0.0) / 100  # Scale back to log return scale
+    omega_i = params.get("omega") / (100**2)  # Scale back variance
+    alpha_i = params.get("alpha[1]")  # Unitless, no scaling needed
+    gamma_i = params.get("gamma[1]", 0.0)  # Unitless, no scaling needed
+    beta_i = params.get("beta[1]")  # Unitless, no scaling needed
+
+    # Initial volatility (already in log return scale)
+    sigma_i_0 = bank_garch_result["conditional_volatility"].iloc[-1]
+
+    # Extract DCC parameters
+    dcc_a, dcc_b = dcc_result["params"]
+    Q_bar = dcc_result["Q_bar"]
+
+    # Initialize Q for DCC
+    Q_current = Q_bar.copy()
+
+    # Extract market shocks (these are FIXED)
+    z_m = market_paths["standardized_shocks"]
+
+    # Storage for bank
+    z_i = np.zeros((n_simulations, horizon))
+    sigma_i = np.zeros((n_simulations, horizon))
+    returns_i = np.zeros((n_simulations, horizon))
+
+    # Initialize bank volatility
+    sigma_i_current = np.full(n_simulations, sigma_i_0)
+
+    for t in range(horizon):
+        # Compute current correlation from DCC
+        # Q_t has structure: [[q11, q12], [q21, q22]]
+        q11 = Q_current[0, 0]
+        q12 = Q_current[0, 1]
+        q22 = Q_current[1, 1]
+
+        # ρ_t = q12 / sqrt(q11 × q22)
+        rho_t = q12 / np.sqrt(q11 * q22)
+        rho_t = np.clip(rho_t, -0.999, 0.999)  # Ensure valid correlation
+
+        # Generate bank shocks CONDITIONAL on market shocks
+        # z_i,t | z_m,t ~ N(ρ_t × z_m,t, 1 - ρ²_t)
+        conditional_mean = rho_t * z_m[:, t]
+        conditional_std = np.sqrt(1 - rho_t ** 2)
+
+        # Draw from conditional distribution
+        z_i[:, t] = conditional_mean + conditional_std * np.random.randn(n_simulations)
+
+        # Current bank volatility
+        sigma_i[:, t] = sigma_i_current
+
+        # Bank innovation
+        eps_i_t = sigma_i_current * z_i[:, t]
+
+        # Bank return
+        returns_i[:, t] = mu_i + eps_i_t
+
+        # Update bank volatility for next period
+        eps_i_sq = eps_i_t ** 2
+        leverage_term_i = gamma_i * eps_i_sq * (eps_i_t < 0)
+
+        sigma_i_sq_next = omega_i + alpha_i * eps_i_sq + leverage_term_i + beta_i * (sigma_i_current ** 2)
+        sigma_i_current = np.sqrt(np.maximum(sigma_i_sq_next, 1e-8))
+
+        # Update DCC Q_t
+        # Use average z vector for updating (simplified)
+        # In practice, could update per-path, but this is computationally expensive
+        z_avg_i = z_i[:, t].mean()
+        z_avg_m = z_m[:, t].mean()
+        z_vec = np.array([[z_avg_i], [z_avg_m]])
+
+        Q_current = (1 - dcc_a - dcc_b) * Q_bar + dcc_a * (z_vec @ z_vec.T) + dcc_b * Q_current
+
+    # Cumulative returns
+    cumulative_returns = returns_i.sum(axis=1)
+
+    return {
+        "cumulative_returns": cumulative_returns,
+        "standardized_shocks": z_i,
+        "conditional_volatilities": sigma_i,
+        "returns": returns_i
+    }
+
+
+def calculate_lrmes_with_common_market(
+    bank_cumulative_returns: np.ndarray,
+    market_cumulative_returns: np.ndarray,
+    crisis_threshold: float = -0.40,
+    min_crisis_scenarios: int = 500
+) -> Dict[str, float]:
+    """Calculate LRMES given bank returns and market returns (common paths).
+
+    Args:
+        bank_cumulative_returns: (n_simulations,) array of bank cumulative returns.
+        market_cumulative_returns: (n_simulations,) array of market cumulative returns.
+        crisis_threshold: Market decline threshold as percentage (e.g., -0.40 for -40%).
+        min_crisis_scenarios: Minimum crisis scenarios required.
+
+    Returns:
+        Dictionary with LRMES and diagnostics.
+
+    Note:
+        Crisis threshold is interpreted as percentage decline. For example:
+        - crisis_threshold = -0.40 means -40% price decline
+        - Converted to log return: ln(1 - 0.40) = ln(0.60) ≈ -0.5108
+
+    Example:
+        >>> lrmes_dict = calculate_lrmes_with_common_market(
+        ...     bank_paths["cumulative_returns"],
+        ...     market_paths["cumulative_returns"],
+        ...     crisis_threshold=-0.40
+        ... )
+        >>> print(f"LRMES: {lrmes_dict['lrmes']:.4f}")
+    """
+    n_simulations = len(market_cumulative_returns)
+
+    # Convert percentage threshold to log return threshold
+    # crisis_threshold = -0.40 (40% decline) → ln(1 - 0.40) = ln(0.60) ≈ -0.5108
+    crisis_threshold_log = np.log(1 + crisis_threshold)
+
+    # Identify crisis scenarios where market declined more than threshold
+    crisis_mask = market_cumulative_returns < crisis_threshold_log
+
+    n_crisis = crisis_mask.sum()
+
+    if n_crisis < min_crisis_scenarios:
+        warnings.warn(
+            f"Only {n_crisis} crisis scenarios out of {n_simulations} "
+            f"({n_crisis/n_simulations*100:.2f}%). Consider increasing simulations "
+            f"or relaxing threshold."
+        )
+
+    if n_crisis == 0:
+        raise ValueError(
+            f"No crisis scenarios found with threshold {crisis_threshold}. "
+            "Check if threshold is too extreme or volatility too low."
+        )
+
+    # Bank returns in crisis scenarios
+    crisis_returns = bank_cumulative_returns[crisis_mask]
+
+    # LRMES = 1 - E[exp(r_i) | crisis]
+    # exp(r_i) = W_i,t+h / W_i,t (equity value ratio)
+    equity_value_ratio = np.exp(crisis_returns)
+    expected_equity_loss = 1 - equity_value_ratio.mean()
+
+    lrmes = max(0, expected_equity_loss)  # LRMES >= 0
+
+    # Market LRMES (for reference)
+    market_crisis_returns = market_cumulative_returns[crisis_mask]
+    market_equity_ratio = np.exp(market_crisis_returns)
+    market_lrmes = 1 - market_equity_ratio.mean()
+
+    return {
+        "lrmes": lrmes,
+        "market_lrmes": market_lrmes,
+        "n_crisis_scenarios": int(n_crisis),
+        "crisis_probability": float(n_crisis / n_simulations),
+        "avg_bank_loss_in_crisis": -crisis_returns.mean(),
+        "avg_market_loss_in_crisis": -market_crisis_returns.mean()
+    }
+
+
 def sensitivity_analysis_lrmes(
     garch_params: Dict,
     dcc_result: Dict,

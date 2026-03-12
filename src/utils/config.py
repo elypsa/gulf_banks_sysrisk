@@ -27,9 +27,14 @@ class SRISKConfig:
 
     # LRMES parameters
     CRISIS_HORIZON_WEEKS: int = 22  # 6 months in trading weeks
-    CRISIS_THRESHOLD: float = -0.40  # -40% market decline
-    N_SIMULATIONS: int = 50000  # Monte Carlo paths
+    CRISIS_THRESHOLD: float = -0.15  # -15% market decline (percentage, converted to log return internally)
+    N_SIMULATIONS: int = 75000  # Monte Carlo paths
     RANDOM_SEED: int = 42  # For reproducibility
+
+    # Note on CRISIS_THRESHOLD:
+    # - Specified as percentage decline (e.g., -0.15 = -15%)
+    # - Internally converted to log return: ln(1 - 0.15) = ln(0.85) ≈ -0.1625
+    # - Standard SRISK literature uses -40% over 6 months
 
     # GARCH-DCC parameters
     GARCH_P: int = 1  # GARCH order
