@@ -29,11 +29,10 @@ from src.models.garch import (
 )
 from src.models.dcc import estimate_dcc, dcc_diagnostics, estimate_ccc
 from src.models.lrmes import (
-    simulate_market_paths,
-    simulate_bank_conditional_on_market,
-    calculate_lrmes_with_common_market
+    simulate_bivariate_garch_dcc,
+    calculate_lrmes_from_bivariate
 )
-from src.utils.config import CONFIG, PROCESSED_DATA_DIR, RESULTS_DATA_DIR
+from src.utils.config import CONFIG, PROCESSED_DATA_DIR, RESULTS_DATA_DIR, SRISKConfig
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -86,26 +85,25 @@ def estimate_benchmark_garch(benchmark_returns, benchmark_name):
     return garch_results[benchmark_name]
 
 
-def process_bank_with_common_market(
+def process_bank_bivariate(
     bank_ric: str,
     bank_series: pd.Series,
     benchmark_garch_result,
-    market_paths: dict,
     benchmark_name: str,
     verbose: bool = False
 ) -> dict:
-    """Process one bank using COMMON market paths (systemic risk measurement).
+    """Process one bank using proper bivariate GARCH-DCC simulation.
 
-    This implements the corrected bivariate specification:
-    - All banks evaluated under THE SAME market crisis scenarios
-    - Bank returns simulated CONDITIONAL on fixed market paths
-    - Uses conditional distribution: z_i,t | z_m,t ~ N(ρ_t × z_m,t, 1 - ρ²_t)
+    This implements the CORRECT methodology from Section 5.2 of srisks.md:
+    - Bank and market returns simulated JOINTLY in each path
+    - Both volatilities and correlations update dynamically along each path
+    - Follows exact 5-step algorithm: initialize, generate shocks, compute returns,
+      accumulate, update volatilities, update correlation
 
     Args:
         bank_ric: Bank RIC identifier.
         bank_series: Bank return series.
         benchmark_garch_result: Pre-estimated GARCH result for benchmark.
-        market_paths: Pre-simulated market paths (shared across all banks).
         benchmark_name: Name of the benchmark.
         verbose: Whether to print progress.
 
@@ -174,19 +172,20 @@ def process_bank_with_common_market(
         if verbose:
             print(f"  Average correlation: {avg_corr:.4f}")
 
-        # 4. Simulate bank returns CONDITIONAL on common market paths
-        # This is the KEY improvement: all banks face the SAME market scenarios
-        bank_paths = simulate_bank_conditional_on_market(
+        # 4. Simulate bivariate GARCH-DCC (CORRECT methodology)
+        # Both bank and market returns simulated jointly with dynamic vol & corr
+        simulation = simulate_bivariate_garch_dcc(
             bank_garch_result=bank_garch_result,
-            market_paths=market_paths,
+            market_garch_result=benchmark_garch_result,
             dcc_result=dcc_result,
-            random_seed=None  # Different random seed for bank-specific shocks
+            horizon=CONFIG.CRISIS_HORIZON_WEEKS,
+            n_simulations=CONFIG.N_SIMULATIONS,
+            random_seed=None  # Different seed per bank for independence
         )
 
-        # 5. Calculate LRMES using common market
-        lrmes_dict = calculate_lrmes_with_common_market(
-            bank_cumulative_returns=bank_paths["cumulative_returns"],
-            market_cumulative_returns=market_paths["cumulative_returns"],
+        # 5. Calculate LRMES from bivariate simulation
+        lrmes_dict = calculate_lrmes_from_bivariate(
+            simulation_result=simulation,
             crisis_threshold=CONFIG.CRISIS_THRESHOLD,
             min_crisis_scenarios=500
         )
@@ -210,7 +209,7 @@ def process_bank_with_common_market(
             'dcc_a': dcc_result['params'][0],
             'dcc_b': dcc_result['params'][1],
             'dcc_persistence': sum(dcc_result['params']),
-            'avg_correlation': avg_corr,
+            'avg_correlation': lrmes_dict['avg_correlation'],
             'convergence': True
         }
 
@@ -388,8 +387,9 @@ def main():
     print("\n" + "=" * 60)
     print("GCC SRISK: BIVARIATE GARCH-DCC & LRMES ESTIMATION")
     print("=" * 60)
-    print("\nMethodology: Each bank is modeled in a bivariate system with")
-    print("the market benchmark (2x2 correlation matrix per srisks.md)")
+    print("\nMethodology: Each bank modeled in bivariate GARCH-DCC with market")
+    print("Following Section 5.2 of srisks.md - proper joint simulation")
+    print("with dynamic volatilities and correlations")
     print("=" * 60)
 
     try:
@@ -398,7 +398,8 @@ def main():
 
         # 2. Select primary benchmark
         # Use the first benchmark (typically broad market index)
-        benchmark_name = benchmark_returns.columns[0]
+        config = SRISKConfig()
+        benchmark_name = config.BENCHMARK_BROAD
         print(f"\nPrimary benchmark: {benchmark_name}")
 
         # 3. Calibrate crisis threshold from historical data
@@ -463,50 +464,14 @@ def main():
         # 4. Estimate benchmark GARCH once (reused for all banks)
         benchmark_garch = estimate_benchmark_garch(benchmark_returns, benchmark_name)
 
-        # 4. Simulate common market paths ONCE (all banks evaluated on same scenarios)
+        # 5. Process each bank using bivariate GARCH-DCC simulation
         print("\n" + "=" * 60)
-        print("SIMULATING COMMON MARKET CRISIS SCENARIOS")
+        print(f"PROCESSING {len(bank_returns.columns)} BANKS (BIVARIATE SIMULATION)")
         print("=" * 60)
-        print(f"Horizon: {CONFIG.CRISIS_HORIZON_WEEKS} weeks ({CONFIG.CRISIS_HORIZON_WEEKS * 5} trading days)")
+        print(f"Horizon: {CONFIG.CRISIS_HORIZON_WEEKS} weeks")
         print(f"Crisis threshold: {CONFIG.CRISIS_THRESHOLD*100:.0f}% market decline")
-        print(f"Number of simulations: {CONFIG.N_SIMULATIONS:,}")
-        print("\nThis ensures all banks are evaluated under THE SAME market shocks")
-        print("(critical for systemic risk measurement)")
-
-        market_paths = simulate_market_paths(
-            market_garch_result=benchmark_garch,
-            horizon=CONFIG.CRISIS_HORIZON_WEEKS,
-            n_simulations=CONFIG.N_SIMULATIONS,
-            random_seed=CONFIG.RANDOM_SEED
-        )
-
-        # Identify crisis scenarios
-        # Convert percentage threshold to log return threshold
-        crisis_threshold_log = np.log(1 + CONFIG.CRISIS_THRESHOLD)
-        crisis_mask = market_paths["cumulative_returns"] < crisis_threshold_log
-        n_market_crisis = crisis_mask.sum()
-
-        print(f"\n✓ Market paths simulated")
-        print(f"  Crisis threshold: {CONFIG.CRISIS_THRESHOLD*100:.0f}% decline = {crisis_threshold_log:.4f} log return")
-        print(f"  Crisis scenarios: {n_market_crisis:,} ({n_market_crisis/CONFIG.N_SIMULATIONS*100:.2f}%)")
-        print(f"  Market avg return: {market_paths['cumulative_returns'].mean():.4f}")
-        print(f"  Market avg return in crisis: {market_paths['cumulative_returns'][crisis_mask].mean():.4f}")
-
-        # Visualize and save market paths
-        print("\nGenerating market paths visualization...")
-        chart_path = RESULTS_DATA_DIR / "market_crisis_scenarios.png"
-        visualize_market_paths(
-            market_paths=market_paths,
-            crisis_threshold=crisis_threshold_log,  # Use log return threshold
-            benchmark_name=benchmark_name,
-            save_path=str(chart_path),
-            n_sample_paths=500
-        )
-
-        # 5. Process each bank using COMMON market paths
-        print("\n" + "=" * 60)
-        print(f"PROCESSING {len(bank_returns.columns)} BANKS (CONDITIONAL ON COMMON MARKET)")
-        print("=" * 60)
+        print(f"Simulations per bank: {CONFIG.N_SIMULATIONS:,}")
+        print("\nEach bank simulated jointly with market (dynamic vol & corr)")
         print()
 
         results_list = []
@@ -514,11 +479,10 @@ def main():
             print(f"[{i}/{len(bank_returns.columns)}] {bank_ric}", end=" ")
 
             bank_series = bank_returns[bank_ric]
-            result = process_bank_with_common_market(
+            result = process_bank_bivariate(
                 bank_ric=bank_ric,
                 bank_series=bank_series,
                 benchmark_garch_result=benchmark_garch,
-                market_paths=market_paths,  # SAME market paths for all banks
                 benchmark_name=benchmark_name,
                 verbose=False  # Set to True for detailed output
             )
@@ -537,15 +501,15 @@ def main():
 
         # Save main results
         metadata = {
-            "description": "LRMES estimates from bivariate GARCH-DCC with COMMON market paths",
-            "methodology": "All banks evaluated conditional on same market crisis scenarios",
+            "description": "LRMES estimates from bivariate GARCH-DCC (Section 5.2 methodology)",
+            "methodology": "Joint simulation of bank and market returns with dynamic volatilities and correlations",
             "benchmark": benchmark_name,
             "horizon_weeks": CONFIG.CRISIS_HORIZON_WEEKS,
             "crisis_threshold": CONFIG.CRISIS_THRESHOLD,
             "n_simulations": CONFIG.N_SIMULATIONS,
             "n_banks": len(results_df),
-            "n_market_crisis_scenarios": int(n_market_crisis),
-            "avg_crisis_scenarios": int(results_df['n_crisis_scenarios'].mean())
+            "avg_crisis_scenarios": int(results_df['n_crisis_scenarios'].mean()),
+            "avg_crisis_probability": float(results_df['crisis_probability'].mean())
         }
         save_dataframe(results_df, "lrmes_estimates", RESULTS_DATA_DIR, metadata)
 
@@ -558,6 +522,7 @@ def main():
             "avg_correlation": results_df['avg_correlation'].mean(),
             "avg_garch_persistence": results_df['garch_persistence'].mean(),
             "avg_dcc_persistence": results_df['dcc_persistence'].mean(),
+            "avg_crisis_probability": results_df['crisis_probability'].mean(),
             "convergence_rate": results_df['convergence'].sum() / len(results_df)
         }
         summary_df = pd.DataFrame([summary])
@@ -570,15 +535,15 @@ def main():
         print(f"\nSuccessfully processed: {len(results_df)}/{len(bank_returns.columns)} banks")
         print(f"Average LRMES: {summary['avg_lrmes']:.4f}")
         print(f"Average bank-market correlation: {summary['avg_correlation']:.4f}")
-        print(f"Common market crisis scenarios: {n_market_crisis:,} ({n_market_crisis/CONFIG.N_SIMULATIONS*100:.2f}%)")
+        print(f"Average crisis probability: {summary['avg_crisis_probability']*100:.2f}%")
 
         print("\n" + "=" * 60)
-        print("METHODOLOGY HIGHLIGHT")
+        print("METHODOLOGY HIGHLIGHT (Section 5.2 of srisks.md)")
         print("=" * 60)
-        print(f"✓ All banks evaluated under THE SAME {n_market_crisis:,} market crisis scenarios")
-        print("✓ Bank returns simulated conditional on common market paths")
-        print("✓ Uses z_i,t | z_m,t ~ N(ρ_t × z_m,t, 1 - ρ²_t)")
-        print("✓ Ensures proper systemic risk measurement (not independent crises)")
+        print("✓ Bank and market returns simulated JOINTLY in each path")
+        print("✓ Volatilities updated via GJR-GARCH: σ²_t+1 = ω + αε²_t + γε²_tI[ε_t<0] + βσ²_t")
+        print("✓ Correlations updated via DCC: Q_t+1 = (1-a-b)Q̄ + a(z_t z_t^T) + b Q_t")
+        print("✓ Proper bivariate dynamics (not conditional on fixed market paths)")
 
         print("\n" + "=" * 60)
         print("Top 10 banks by LRMES (highest systemic risk):")
@@ -589,7 +554,6 @@ def main():
         print(f"\nResults saved to: {RESULTS_DATA_DIR}")
         print("  - lrmes_estimates.parquet (full results)")
         print("  - lrmes_summary_stats.parquet (aggregate statistics)")
-        print("  - market_crisis_scenarios.png (visualization of common market paths)")
         print("\nNext step: Run scripts/04_calculate_srisk.py")
 
     except Exception as e:

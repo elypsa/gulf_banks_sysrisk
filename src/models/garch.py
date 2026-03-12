@@ -59,8 +59,8 @@ def estimate_gjr_garch(
     if len(returns_clean) < 100:
         raise ValueError(f"Insufficient data: {len(returns_clean)} observations (need >= 100)")
 
-    # Convert to percentage returns for numerical stability
-    returns_scaled = returns_clean * 100
+
+    returns_scaled = returns_clean 
 
     # Estimate GJR-GARCH
     try:
