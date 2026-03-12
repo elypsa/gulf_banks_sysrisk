@@ -440,15 +440,16 @@ def main():
 
                 print(f"\nHistorical {rolling_window}-day rolling returns for {benchmark_name}:")
                 print(f"  Observations: {len(rolling_returns)}")
-                print(f"  Mean: {mean_return:.4f} ({(np.exp(mean_return)-1)*100:.2f}%)")
-                print(f"  Minimum: {min_return:.4f} ({(np.exp(min_return)-1)*100:.2f}%)")
-                print(f"  1st percentile: {percentile_1:.4f} ({(np.exp(percentile_1)-1)*100:.2f}%)")
-                print(f"  5th percentile: {percentile_5:.4f} ({(np.exp(percentile_5)-1)*100:.2f}%)")
-                print(f"  10th percentile: {percentile_10:.4f} ({(np.exp(percentile_10)-1)*100:.2f}%)")
+                print(f"  Mean: {mean_return:.4f}% log return ({(np.exp(mean_return/100)-1)*100:.2f}% simple)")
+                print(f"  Minimum: {min_return:.4f}% log return ({(np.exp(min_return/100)-1)*100:.2f}% simple)")
+                print(f"  1st percentile: {percentile_1:.4f}% log return ({(np.exp(percentile_1/100)-1)*100:.2f}% simple)")
+                print(f"  5th percentile: {percentile_5:.4f}% log return ({(np.exp(percentile_5/100)-1)*100:.2f}% simple)")
+                print(f"  10th percentile: {percentile_10:.4f}% log return ({(np.exp(percentile_10/100)-1)*100:.2f}% simple)")
 
                 # Compare with configured threshold
-                configured_threshold_log = np.log(1 + CONFIG.CRISIS_THRESHOLD)
-                print(f"\nConfigured crisis threshold: {CONFIG.CRISIS_THRESHOLD*100:.1f}% = {configured_threshold_log:.4f} (log)")
+                # Convert to log return in percentage points (returns are in % already)
+                configured_threshold_log = np.log(1 + CONFIG.CRISIS_THRESHOLD) * 100
+                print(f"\nConfigured crisis threshold: {CONFIG.CRISIS_THRESHOLD*100:.1f}% = {configured_threshold_log:.4f}% (log)")
 
                 # Recommendation
                 if configured_threshold_log < percentile_5:
@@ -463,6 +464,84 @@ def main():
 
         # 4. Estimate benchmark GARCH once (reused for all banks)
         benchmark_garch = estimate_benchmark_garch(benchmark_returns, benchmark_name)
+
+        # 4.5. Generate sample market paths for visualization (sanity check)
+        print("\n" + "=" * 60)
+        print("GENERATING SAMPLE MARKET PATHS FOR VISUALIZATION")
+        print("=" * 60)
+        print("Simulating one bank-market pair to visualize market crisis scenarios...")
+
+        # Pick first bank for sample simulation
+        sample_bank_ric = 'FAB.AD'
+        sample_bank_series = bank_returns[sample_bank_ric]
+
+        # Estimate sample bank GARCH
+        sample_bank_garch_dict = estimate_garch_multivariate(
+            pd.DataFrame({sample_bank_ric: sample_bank_series}),
+            p=CONFIG.GARCH_P,
+            q=CONFIG.GARCH_Q,
+            mean_model="Constant",
+            dist="normal",
+            verbose=False
+        )
+        sample_bank_garch = sample_bank_garch_dict[sample_bank_ric]
+
+        # Estimate sample DCC
+        bivariate_garch = {
+            sample_bank_ric: sample_bank_garch,
+            benchmark_name: benchmark_garch
+        }
+        std_resids = extract_standardized_residuals(bivariate_garch)
+        std_resids = std_resids[[sample_bank_ric, benchmark_name]]
+
+        try:
+            sample_dcc_result = estimate_dcc(std_resids, initial_params=[0.01, 0.95])
+        except:
+            sample_dcc_result = estimate_ccc(std_resids)
+
+        # Run sample bivariate simulation
+        print(f"Running sample simulation for {sample_bank_ric}...")
+        sample_simulation = simulate_bivariate_garch_dcc(
+            bank_garch_result=sample_bank_garch,
+            market_garch_result=benchmark_garch,
+            dcc_result=sample_dcc_result,
+            horizon=CONFIG.CRISIS_HORIZON_WEEKS,
+            n_simulations=CONFIG.N_SIMULATIONS,
+            random_seed=CONFIG.RANDOM_SEED  # Fixed seed for reproducibility
+        )
+
+        # Extract market paths for visualization
+        market_paths_sample = {
+            "cumulative_returns": sample_simulation["market_cumulative_returns"],
+            "returns": sample_simulation["market_returns"],
+            "conditional_volatilities": sample_simulation["market_volatilities"],
+            "n_simulations": sample_simulation["n_simulations"],
+            "horizon": sample_simulation["horizon"]
+        }
+
+        # Calculate crisis scenarios for this sample
+        crisis_threshold_log = np.log(1 + CONFIG.CRISIS_THRESHOLD) * 100
+        crisis_mask_sample = market_paths_sample["cumulative_returns"] < crisis_threshold_log
+        n_market_crisis_sample = crisis_mask_sample.sum()
+
+        print(f"\n✓ Sample simulation completed")
+        print(f"  Bank: {sample_bank_ric}")
+        print(f"  Crisis threshold: {CONFIG.CRISIS_THRESHOLD*100:.0f}% decline = {crisis_threshold_log:.4f}% (log)")
+        print(f"  Crisis scenarios: {n_market_crisis_sample:,} ({n_market_crisis_sample/CONFIG.N_SIMULATIONS*100:.2f}%)")
+        print(f"  Market avg return: {market_paths_sample['cumulative_returns'].mean():.4f}%")
+        print(f"  Market avg return in crisis: {market_paths_sample['cumulative_returns'][crisis_mask_sample].mean():.4f}%")
+
+        # Visualize and save market paths
+        print("\nGenerating market paths visualization...")
+        chart_path = RESULTS_DATA_DIR / "market_crisis_scenarios_sample.png"
+        visualize_market_paths(
+            market_paths=market_paths_sample,
+            crisis_threshold=crisis_threshold_log,
+            benchmark_name=benchmark_name,
+            save_path=str(chart_path),
+            n_sample_paths=500
+        )
+        print(f"✓ Chart saved: {chart_path}")
 
         # 5. Process each bank using bivariate GARCH-DCC simulation
         print("\n" + "=" * 60)
@@ -554,6 +633,7 @@ def main():
         print(f"\nResults saved to: {RESULTS_DATA_DIR}")
         print("  - lrmes_estimates.parquet (full results)")
         print("  - lrmes_summary_stats.parquet (aggregate statistics)")
+        print("  - market_crisis_scenarios_sample.png (sample market paths visualization)")
         print("\nNext step: Run scripts/04_calculate_srisk.py")
 
     except Exception as e:

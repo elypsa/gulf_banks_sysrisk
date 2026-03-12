@@ -577,8 +577,10 @@ def calculate_lrmes_from_bivariate(
     correlations = simulation_result["correlations"]
     n_simulations = simulation_result["n_simulations"]
 
-    # Convert percentage threshold to log return
-    crisis_threshold_log = np.log(1 + crisis_threshold)
+    # Convert percentage threshold to log return in percentage points
+    # crisis_threshold is in decimal (e.g., -0.40 for -40%)
+    # Returns are in percentage points, so multiply by 100
+    crisis_threshold_log = np.log(1 + crisis_threshold) * 100
 
     # Identify crisis scenarios
     crisis_mask = market_cumulative < crisis_threshold_log
@@ -601,7 +603,8 @@ def calculate_lrmes_from_bivariate(
     market_crisis_returns = market_cumulative[crisis_mask]
 
     # LRMES = 1 - E[exp(r_i) | crisis]
-    equity_value_ratio = np.exp(bank_crisis_returns)
+    # Returns are in percentage points, so divide by 100 before exp
+    equity_value_ratio = np.exp(bank_crisis_returns / 100)
     lrmes = 1 - equity_value_ratio.mean()
     lrmes = max(0, lrmes)  # LRMES >= 0
 

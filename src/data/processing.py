@@ -40,9 +40,9 @@ def calculate_returns(
         >>> returns = calculate_returns(prices, method='log')
     """
     if method == "log":
-        returns = np.log(prices / prices.shift(lag))
+        returns = np.log(prices / prices.shift(lag))*100
     elif method == "simple":
-        returns = prices.pct_change()
+        returns = prices.pct_change()*100
     else:
         raise ValueError(f"Unknown method: {method}. Use 'log' or 'simple'.")
 

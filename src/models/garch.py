@@ -32,7 +32,7 @@ def estimate_gjr_garch(
     """Estimate GJR-GARCH(p,q) model for a return series.
 
     Args:
-        returns: Return series (log returns).
+        returns: Return series in PERCENTAGE POINTS (e.g., 1.5 means 1.5% return).
         p: GARCH order (default 1).
         q: ARCH order (default 1).
         mean_model: Mean model specification ('Constant', 'Zero', 'AR').
@@ -41,17 +41,25 @@ def estimate_gjr_garch(
     Returns:
         Dictionary containing:
             - model: Fitted arch model object
-            - params: Parameter estimates
-            - conditional_volatility: σ_t series
+            - params: Parameter estimates (in percentage point scale)
+                * mu: mean in % (e.g., 0.05 means 0.05% per period)
+                * omega: variance in %² (e.g., 0.01 means 0.01 %²)
+                * alpha, gamma, beta: unitless (e.g., 0.05, 0.08, 0.90)
+            - conditional_volatility: σ_t series (in %, same scale as returns)
             - standardized_residuals: z_t series
             - aic: Akaike Information Criterion
             - bic: Bayesian Information Criterion
             - ljung_box_p: Ljung-Box test p-value (H0: no autocorrelation)
 
+    Note:
+        Returns should be in percentage points (e.g., from log(P_t/P_{t-1})*100).
+        All outputs (params, volatility) are in the same percentage point scale.
+
     Example:
-        >>> returns = pd.Series(np.random.randn(1000) * 0.01)
+        >>> # Returns in percentage points: [1.5, -0.8, 2.1, ...]
+        >>> returns = pd.Series(np.random.randn(1000) * 1.5)
         >>> result = estimate_gjr_garch(returns)
-        >>> print(result['params'])
+        >>> print(result['params']['mu'])  # In % (e.g., 0.05 means 0.05%)
     """
     # Remove missing values
     returns_clean = returns.dropna()
@@ -76,9 +84,9 @@ def estimate_gjr_garch(
 
         fitted = model.fit(disp="off", show_warning=False)
 
-        # Extract results
+        # Extract results (no scaling needed - returns already in percentage points)
         params = fitted.params
-        conditional_vol = fitted.conditional_volatility / 100  # Scale back
+        conditional_vol = fitted.conditional_volatility
         std_resid = fitted.std_resid
 
         # Diagnostic: Ljung-Box test on standardized residuals
@@ -318,7 +326,7 @@ def forecast_volatility(
 
     # Extract variance forecast and take square root
     variance_forecast = forecast.variance.iloc[-1, :]
-    volatility_forecast = np.sqrt(variance_forecast) / 100  # Scale back
+    volatility_forecast = np.sqrt(variance_forecast)  # No scaling needed
 
     return volatility_forecast
 
