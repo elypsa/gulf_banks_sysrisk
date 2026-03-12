@@ -183,21 +183,37 @@ def main():
         }
         save_dataframe(clean_universe, "banks_universe_clean", PROCESSED_DATA_DIR, metadata_universe)
 
-        # Extract and save returns separately (for GARCH estimation)
-        ret_cols = [col for col in clean_data.columns if col.startswith("ret_")]
-        returns = clean_data[ret_cols]
+        # Extract bank returns separately (for GARCH estimation)
+        bank_ret_cols = [col for col in clean_data.columns if col.startswith("ret_")]
+        bank_returns = clean_data[bank_ret_cols]
 
         # Rename columns to remove 'ret_' prefix for cleaner access
-        returns.columns = [col.replace("ret_", "") for col in returns.columns]
+        bank_returns.columns = [col.replace("ret_", "") for col in bank_returns.columns]
 
-        metadata_returns = {
-            "description": "Log returns for GARCH-DCC estimation",
-            "trading_days": len(returns),
-            "num_instruments": len(returns.columns),
+        metadata_bank_returns = {
+            "description": "Bank log returns for GARCH-DCC estimation",
+            "trading_days": len(bank_returns),
+            "num_banks": len(bank_returns.columns),
             "return_type": "log",
             "ready_for_garch": True
         }
-        save_dataframe(returns, "returns_clean", PROCESSED_DATA_DIR, metadata_returns)
+        save_dataframe(bank_returns, "returns_banks_clean", PROCESSED_DATA_DIR, metadata_bank_returns)
+
+        # Extract benchmark returns separately (for market index)
+        bench_ret_cols = [col for col in clean_data.columns if col.startswith("bench_ret_")]
+        bench_returns = clean_data[bench_ret_cols]
+
+        # Rename columns to remove 'bench_ret_' prefix for cleaner access
+        bench_returns.columns = [col.replace("bench_ret_", "") for col in bench_returns.columns]
+
+        metadata_bench_returns = {
+            "description": "Benchmark log returns (market indices)",
+            "trading_days": len(bench_returns),
+            "num_benchmarks": len(bench_returns.columns),
+            "return_type": "log",
+            "instruments": list(bench_returns.columns)
+        }
+        save_dataframe(bench_returns, "returns_benchmarks_clean", PROCESSED_DATA_DIR, metadata_bench_returns)
 
         # Summary statistics
         print("\n" + "=" * 60)
@@ -213,8 +229,17 @@ def main():
             count = len(clean_universe[clean_universe['country_chain'] == country])
             print(f"  - {country}: {count} banks")
 
+        print("\nReturns data:")
+        print(f"  - Bank returns: {len(bank_returns.columns)} instruments")
+        print(f"  - Benchmark returns: {len(bench_returns.columns)} indices")
+        print(f"    Benchmarks: {', '.join(bench_returns.columns.tolist())}")
+
         print(f"\nProcessed data saved to: {PROCESSED_DATA_DIR}")
-        print(f"Data quality plots saved to: {viz_dir}")
+        print(f"  - aligned_daily_data.parquet (full dataset)")
+        print(f"  - returns_banks_clean.parquet (bank returns only)")
+        print(f"  - returns_benchmarks_clean.parquet (benchmark returns only)")
+        print(f"  - banks_universe_clean.parquet (filtered universe)")
+        print(f"\nData quality plots saved to: {viz_dir}")
         print("\nNext steps:")
         print("  1. Review data quality plots in: data/processed/data_quality_plots/")
         print("  2. Check missing_data_summary.csv for detailed statistics")
