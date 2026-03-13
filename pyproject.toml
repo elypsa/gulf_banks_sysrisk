@@ -8,10 +8,12 @@ dependencies = [
     "arch>=8.0.0",
     "hijri-converter>=2.3.2.post1",
     "ipykernel>=7.2.0",
+    "joblib>=1.5.3",
     "jupyter>=1.1.1",
     "lseg-data>=2.1.1",
     "matplotlib>=3.10.8",
     "pandas>=2.3.3",
     "pyarrow>=23.0.1",
     "seaborn>=0.13.2",
+    "tqdm>=4.67.3",
 ]

@@ -3,12 +3,17 @@
 
 This script implements Phase 4 of the SRISK pipeline:
 1. Load processed data (aligned debt + equity)
-2. Load LRMES estimates from Phase 3
+2. Load LRMES estimates from Phase 3 (static or rolling)
 3. Calculate SRISK using configured capital ratio
 4. Perform decomposition analysis (size, leverage, risk effects)
 5. Calculate system-wide SRISK and country aggregates
 6. Generate summary statistics
 7. Save results for reporting
+
+LRMES Modes:
+    - Static mode: Uses constant LRMES from lrmes_estimates.parquet
+    - Rolling mode: Uses time-varying LRMES from lrmes_rolling_panel.parquet
+      (enabled via CONFIG.ROLLING_WINDOW_ENABLED = True)
 
 Capital ratio can be adjusted in src/utils/config.py (CONFIG.CAPITAL_RATIO_BASEL)
 
@@ -36,29 +41,78 @@ import pandas as pd
 
 
 def load_required_data():
-    """Load all required data for SRISK calculation."""
+    """Load all required data for SRISK calculation.
+
+    This function handles both static and rolling LRMES:
+    - If rolling window is enabled and panel data exists, use time-varying LRMES
+    - Otherwise, fall back to static LRMES (constant over time)
+    """
     print("\n" + "=" * 60)
     print("LOADING DATA")
     print("=" * 60)
 
     aligned_data = load_dataframe("aligned_daily_data", PROCESSED_DATA_DIR)
-    lrmes_df = load_dataframe("lrmes_estimates", RESULTS_DATA_DIR)
     bank_universe = load_dataframe("banks_universe_clean", PROCESSED_DATA_DIR)
 
     print(f"\nAligned data: {aligned_data.shape}")
-    print(f"LRMES estimates: {len(lrmes_df)} banks")
     print(f"Bank universe: {len(bank_universe)} banks")
 
-    # Convert LRMES from single-row to time series (broadcast to all dates)
-    # Note: In the current implementation, LRMES is constant over time
-    # For time-varying LRMES, this would use the full time series
-    lrmes_values = dict(zip(lrmes_df["bank_ric"], lrmes_df["lrmes"]))
+    # Check if rolling LRMES is enabled and available
+    rolling_panel_path = RESULTS_DATA_DIR / "lrmes_rolling_panel.parquet"
 
-    # Create time series DataFrame
-    lrmes_ts = pd.DataFrame(
-        {inst: [lrmes_values[inst]] * len(aligned_data) for inst in lrmes_values.keys()},
-        index=aligned_data.index
-    )
+    if CONFIG.ROLLING_WINDOW_ENABLED and rolling_panel_path.exists():
+        print("\n✓ Loading ROLLING LRMES (time-varying)")
+
+        # Load rolling panel data
+        lrmes_panel = pd.read_parquet(rolling_panel_path)
+        print(f"  Panel shape: {lrmes_panel.shape}")
+        print(f"  Windows: {lrmes_panel['window_date'].nunique()}")
+        print(f"  Banks: {lrmes_panel['bank_ric'].nunique()}")
+        print(f"  Window date range: {lrmes_panel['window_date'].min()} to {lrmes_panel['window_date'].max()}")
+
+        # Pivot to (date × bank_ric) format
+        lrmes_ts = lrmes_panel.pivot(
+            index='window_date',
+            columns='bank_ric',
+            values='lrmes'
+        )
+
+        # Reindex to match aligned_data dates and forward-fill
+        # This propagates weekly LRMES estimates to daily frequency
+        lrmes_ts = lrmes_ts.reindex(aligned_data.index, method='ffill')
+
+        # Backward-fill any leading NaNs (before first window)
+        lrmes_ts = lrmes_ts.fillna(method='bfill')
+
+        # Check coverage
+        missing_banks = set(bank_universe['RIC']) - set(lrmes_ts.columns)
+        if missing_banks:
+            print(f"\n⚠ WARNING: {len(missing_banks)} banks missing from rolling LRMES panel:")
+            print(f"  {', '.join(list(missing_banks)[:5])}" +
+                  (f" ... and {len(missing_banks)-5} more" if len(missing_banks) > 5 else ""))
+
+        print(f"\n✓ LRMES time series shape: {lrmes_ts.shape}")
+        print(f"  Using TIME-VARYING LRMES from rolling window estimation")
+
+    else:
+        # Fall back to static LRMES
+        if CONFIG.ROLLING_WINDOW_ENABLED:
+            print(f"\n⚠ Rolling window enabled but panel data not found at: {rolling_panel_path}")
+            print("  Falling back to STATIC LRMES")
+        else:
+            print("\n✓ Loading STATIC LRMES (constant over time)")
+
+        lrmes_df = load_dataframe("lrmes_estimates", RESULTS_DATA_DIR)
+        print(f"  LRMES estimates: {len(lrmes_df)} banks")
+
+        # Convert LRMES from single-row to time series (broadcast to all dates)
+        lrmes_values = dict(zip(lrmes_df["bank_ric"], lrmes_df["lrmes"]))
+
+        # Create time series DataFrame
+        lrmes_ts = pd.DataFrame(
+            {inst: [lrmes_values[inst]] * len(aligned_data) for inst in lrmes_values.keys()},
+            index=aligned_data.index
+        )
 
     return aligned_data, lrmes_ts, bank_universe
 

@@ -45,6 +45,13 @@ class SRISKConfig:
     # DCC parameters
     DCC_ENABLED: bool = True  # Use DCC, else CCC
 
+    # Rolling window parameters
+    ROLLING_WINDOW_ENABLED: bool = True  # Enable rolling window estimation
+    ROLLING_WINDOW_DAYS: int = 1260  # 5 years of trading days (252 * 5)
+    ROLLING_STEP_DAYS: int = 5  # Weekly step size (5 trading days)
+    ROLLING_N_JOBS: int = -1  # Number of parallel jobs (-1 = all CPUs)
+    ROLLING_MIN_CRISIS_PATHS: int = 500  # Minimum crisis scenarios required
+
     # Data parameters
     FUNDAMENTAL_LAG_DAYS: int = 45  # Reporting delay for quarterly data
     MIN_TRADING_DAYS: int = 252  # Minimum history required (1 year)
