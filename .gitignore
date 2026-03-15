@@ -20,3 +20,10 @@ data/**/*
 # But do not ignore the data directory itself (important for Git to process its contents)
 !src/data
 
+# Ignore notebooks outputs in notebooks/
+!notebooks/**
+
+srisks.md
+
+# ignore .html files
+*.html
