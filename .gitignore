@@ -21,7 +21,7 @@ data/**/*
 !src/data
 
 # Ignore notebooks outputs in notebooks/
-!notebooks/**
+notebooks/*
 
 srisks.md
 
