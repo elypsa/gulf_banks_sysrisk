@@ -27,3 +27,7 @@ srisks.md
 
 # ignore .html files
 *.html
+
+DATA_STRUCTURE.md
+
+materials/
