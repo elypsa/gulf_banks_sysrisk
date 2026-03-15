@@ -9,6 +9,7 @@ from .covar import (
     calculate_delta_covar,
     estimate_covar_all_banks
 )
+from .covar_rolling import RollingCoVaREstimator
 
 __all__ = [
     "calculate_system_return",
@@ -17,5 +18,6 @@ __all__ = [
     "estimate_bank_var",
     "estimate_covar",
     "calculate_delta_covar",
-    "estimate_covar_all_banks"
+    "estimate_covar_all_banks",
+    "RollingCoVaREstimator"
 ]
