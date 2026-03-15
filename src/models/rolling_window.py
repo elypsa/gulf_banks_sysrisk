@@ -60,6 +60,7 @@ class RollingWindowEstimator:
         benchmark_name: Name of benchmark column to use.
         window_days: Fixed window size in trading days.
         step_days: Step size between windows in trading days.
+        start_date: Start date for rolling windows (only windows ending >= this date).
         n_jobs: Number of parallel jobs (-1 = all CPUs).
         min_crisis_paths: Minimum crisis scenarios required.
 
@@ -67,7 +68,8 @@ class RollingWindowEstimator:
         >>> estimator = RollingWindowEstimator(
         ...     bank_returns=bank_returns,
         ...     benchmark_returns=benchmark_returns,
-        ...     benchmark_name=".GPDGC"
+        ...     benchmark_name=".GPDGC",
+        ...     start_date="2020-01-01"
         ... )
         >>> panel = estimator.run_rolling_estimation()
         >>> print(panel.head())
@@ -80,6 +82,7 @@ class RollingWindowEstimator:
         benchmark_name: str,
         window_days: int = None,
         step_days: int = None,
+        start_date: str = None,
         n_jobs: int = None,
         min_crisis_paths: int = None
     ):
@@ -91,6 +94,7 @@ class RollingWindowEstimator:
             benchmark_name: Column name of benchmark to use.
             window_days: Window size in trading days (default from CONFIG).
             step_days: Step size in trading days (default from CONFIG).
+            start_date: Start date for rolling windows (window end dates >= this date, default from CONFIG).
             n_jobs: Number of parallel jobs (default from CONFIG).
             min_crisis_paths: Minimum crisis scenarios (default from CONFIG).
         """
@@ -101,6 +105,7 @@ class RollingWindowEstimator:
         # Configuration
         self.window_days = window_days or CONFIG.ROLLING_WINDOW_DAYS
         self.step_days = step_days or CONFIG.ROLLING_STEP_DAYS
+        self.start_date = pd.Timestamp(start_date) if start_date else pd.Timestamp(CONFIG.ROLLING_WINDOW_START_DATE)
         self.n_jobs = n_jobs or CONFIG.ROLLING_N_JOBS
         self.min_crisis_paths = min_crisis_paths or CONFIG.ROLLING_MIN_CRISIS_PATHS
 
@@ -116,6 +121,7 @@ class RollingWindowEstimator:
         print(f"Rolling Window Estimator initialized:")
         print(f"  Window size: {self.window_days} days ({self.window_days/252:.1f} years)")
         print(f"  Step size: {self.step_days} days ({self.step_days/5:.0f} weeks)")
+        print(f"  Window start date: {self.start_date.date()} (window end dates >= this date)")
         print(f"  Date range: {self.bank_returns.index.min()} to {self.bank_returns.index.max()}")
         print(f"  Total observations: {len(self.bank_returns)}")
         print(f"  Banks: {len(self.bank_returns.columns)}")
@@ -126,6 +132,8 @@ class RollingWindowEstimator:
 
         Windows are defined by their END date. Each window contains
         [end_date - window_days : end_date] (inclusive).
+
+        Only windows with end_date >= self.start_date are included.
 
         Returns:
             List of window end dates.
@@ -151,12 +159,27 @@ class RollingWindowEstimator:
         )
 
         # Convert to dates
-        window_dates = [dates[idx] for idx in window_end_indices]
+        all_window_dates = [dates[idx] for idx in window_end_indices]
+
+        # Filter to only include windows with end_date >= start_date
+        window_dates = [d for d in all_window_dates if d >= self.start_date]
+
+        if len(window_dates) == 0:
+            raise ValueError(
+                f"No windows found with end_date >= {self.start_date.date()}. "
+                f"Available window range: {all_window_dates[0].date()} to {all_window_dates[-1].date()}"
+            )
 
         print(f"\nGenerated {len(window_dates)} rolling windows:")
-        print(f"  First window: {dates[first_window_end_idx - self.window_days]} to {window_dates[0]}")
-        print(f"  Last window: {dates[-self.window_days]} to {window_dates[-1]}")
-        print(f"  Total windows: {len(window_dates)}")
+        print(f"  Total possible windows: {len(all_window_dates)}")
+        print(f"  Filtered to start_date >= {self.start_date.date()}: {len(window_dates)} windows")
+
+        # Get first filtered window details
+        first_window_idx = self.bank_returns.index.get_loc(window_dates[0])
+        first_window_start = dates[first_window_idx - self.window_days + 1]
+
+        print(f"  First window: {first_window_start.date()} to {window_dates[0].date()}")
+        print(f"  Last window: {dates[self.bank_returns.index.get_loc(window_dates[-1]) - self.window_days + 1].date()} to {window_dates[-1].date()}")
 
         return window_dates
 

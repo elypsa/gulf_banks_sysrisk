@@ -29,7 +29,8 @@ from src.data import (
     get_benchmarks,
     get_holidays,
     get_fx_rates,
-    save_dataframe
+    save_dataframe,
+    fetch_incremental_or_full
 )
 from src.utils.config import CONFIG, RAW_DATA_DIR
 import pandas as pd
@@ -98,7 +99,7 @@ def fetch_fundamentals(bank_universe: pd.DataFrame) -> pd.DataFrame:
             ]["bank_ric"].tolist()
 
             print(f"\nFetching {country_chain} ({len(country_banks)} banks)...")
-            df = get_fundamentals(country_banks, start_date="2010-01-01")
+            df = get_fundamentals(country_banks, start_date=CONFIG.DATA_START_DATE)
 
             # Add country identifier
             df["country_chain"] = country_chain
@@ -112,7 +113,7 @@ def fetch_fundamentals(bank_universe: pd.DataFrame) -> pd.DataFrame:
         "description": "Quarterly fundamental data (balance sheets)",
         "fields": ["Total Assets", "Common Equity", "Total Liabilities", "Total Liab & Equity"],
         "frequency": "Quarterly",
-        "start_date": "2010-01-01",
+        "start_date": CONFIG.DATA_START_DATE,
         "currency": "USD (converted by LSEG)",
         "num_banks": len(bank_rics)
     }
@@ -122,7 +123,7 @@ def fetch_fundamentals(bank_universe: pd.DataFrame) -> pd.DataFrame:
 
 
 def fetch_market_data(bank_universe: pd.DataFrame) -> pd.DataFrame:
-    """Fetch and save daily market data.
+    """Fetch and save daily market data (with incremental fetching support).
 
     Args:
         bank_universe: DataFrame with bank_ric column.
@@ -136,72 +137,78 @@ def fetch_market_data(bank_universe: pd.DataFrame) -> pd.DataFrame:
 
     bank_rics = bank_universe["bank_ric"].tolist()
 
-    with lseg_session():
-        # Fetch by country to avoid timeout
-        all_dfs = []
-        for country_chain in bank_universe["country_chain"].unique():
-            country_banks = bank_universe[
-                bank_universe["country_chain"] == country_chain
-            ]["bank_ric"].tolist()
+    def _fetch_market_data_by_country(start_date: str) -> pd.DataFrame:
+        """Inner function to fetch market data for all countries from start_date."""
+        with lseg_session():
+            # Fetch by country to avoid timeout
+            all_dfs = []
+            for country_chain in bank_universe["country_chain"].unique():
+                country_banks = bank_universe[
+                    bank_universe["country_chain"] == country_chain
+                ]["bank_ric"].tolist()
 
-            print(f"\nFetching {country_chain} ({len(country_banks)} banks)...")
-            df = get_market_data(country_banks, start_date="2009-12-31")
+                print(f"  Fetching {country_chain} ({len(country_banks)} banks)...")
+                df = get_market_data(country_banks, start_date=start_date)
 
-            # DIAGNOSTIC: Check for object dtypes (mixed types)
-            object_cols = [col for col in df.columns if df[col].dtype == 'object']
-            if object_cols:
-                print(f"  ⚠️  Found {len(object_cols)} columns with mixed types:")
-                for col in object_cols[:3]:  # Show first 3
-                    sample_values = df[col].dropna().head(10).tolist()
-                    print(f"      {col}: {sample_values}")
+                # DIAGNOSTIC: Check for object dtypes (mixed types)
+                object_cols = [col for col in df.columns if df[col].dtype == 'object']
+                if object_cols:
+                    print(f"    ⚠️  Found {len(object_cols)} columns with mixed types:")
+                    for col in object_cols[:3]:  # Show first 3
+                        sample_values = df[col].dropna().head(10).tolist()
+                        print(f"        {col}: {sample_values}")
 
-            all_dfs.append(df)
+                all_dfs.append(df)
 
-    # Combine all countries
-    df_combined = pd.concat(all_dfs, axis=1)
+        # Combine all countries
+        df_combined = pd.concat(all_dfs, axis=1)
 
-    # DIAGNOSTIC: Check combined dataframe
-    object_cols_combined = [col for col in df_combined.columns if df_combined[col].dtype == 'object']
-    if object_cols_combined:
-        print(f"\n⚠️  After concat: {len(object_cols_combined)} columns with object dtype")
-        print(f"   Sample columns: {object_cols_combined[:5]}")
+        # DIAGNOSTIC: Check combined dataframe
+        object_cols_combined = [col for col in df_combined.columns if df_combined[col].dtype == 'object']
+        if object_cols_combined:
+            print(f"\n  ⚠️  After concat: {len(object_cols_combined)} columns with object dtype")
 
-        # Show sample problematic values
-        for col in object_cols_combined[:2]:
-            non_numeric = df_combined[col][df_combined[col].apply(lambda x: isinstance(x, str))].unique()
-            if len(non_numeric) > 0:
-                print(f"   {col} contains strings: {non_numeric[:5]}")
+        # FIX: Coerce all columns to numeric (LSEG error codes → NaN)
+        print("\n  🔧 Coercing mixed-type columns to numeric...")
+        for col in df_combined.columns:
+            if df_combined[col].dtype == 'object':
+                # Convert to numeric, errors='coerce' will turn strings into NaN
+                df_combined[col] = pd.to_numeric(df_combined[col], errors='coerce')
 
-    # FIX: Coerce all columns to numeric (LSEG error codes → NaN)
-    print("\n🔧 Coercing mixed-type columns to numeric...")
-    for col in df_combined.columns:
-        if df_combined[col].dtype == 'object':
-            # Convert to numeric, errors='coerce' will turn strings into NaN
-            df_combined[col] = pd.to_numeric(df_combined[col], errors='coerce')
+        # Verify fix
+        remaining_object_cols = [col for col in df_combined.columns if df_combined[col].dtype == 'object']
+        if remaining_object_cols:
+            print(f"    ⚠️  Still have {len(remaining_object_cols)} object columns after coercion")
+        else:
+            if object_cols_combined:
+                print(f"    ✓ All columns now numeric (converted: {len(object_cols_combined)})")
 
-    # Verify fix
-    remaining_object_cols = [col for col in df_combined.columns if df_combined[col].dtype == 'object']
-    if remaining_object_cols:
-        print(f"   ⚠️  Still have {len(remaining_object_cols)} object columns after coercion")
-    else:
-        print(f"   ✓ All columns now numeric (object cols converted: {len(object_cols_combined)})")
+        return df_combined
 
-    # Save
+    # Metadata template
     metadata = {
         "description": "Daily market data (prices, returns, market cap)",
         "fields": ["TR.PriceClose", "TR.TotalReturn", "TR.CompanyMarketCapitalization"],
         "frequency": "Daily",
-        "start_date": "2009-12-31",
         "currency": "USD (converted by LSEG)",
         "num_banks": len(bank_rics)
     }
-    save_dataframe(df_combined, "prices_daily", RAW_DATA_DIR, metadata)
+
+    # Use incremental fetching
+    df_combined = fetch_incremental_or_full(
+        filename="prices_daily",
+        data_dir=RAW_DATA_DIR,
+        fetch_function=_fetch_market_data_by_country,
+        full_start_date=CONFIG.DATA_START_DATE,
+        metadata_template=metadata,
+        verbose=True
+    )
 
     return df_combined
 
 
 def fetch_benchmarks() -> pd.DataFrame:
-    """Fetch and save benchmark indices.
+    """Fetch and save benchmark indices (with incremental fetching support).
 
     Returns:
         DataFrame with daily benchmark prices.
@@ -218,18 +225,28 @@ def fetch_benchmarks() -> pd.DataFrame:
 
     all_benchmarks = [broad_benchmark] + country_indices
 
-    with lseg_session():
-        df = get_benchmarks(all_benchmarks, start_date="2009-12-31")
+    def _fetch_benchmarks_data(start_date: str) -> pd.DataFrame:
+        """Inner function to fetch benchmark data from start_date."""
+        with lseg_session():
+            return get_benchmarks(all_benchmarks, start_date=start_date)
 
-    # Save
+    # Metadata template
     metadata = {
         "description": "Benchmark indices (broad + country banking sectors)",
         "broad_benchmark": broad_benchmark,
         "country_indices": CONFIG.COUNTRY_INDICES,
-        "frequency": "Daily",
-        "start_date": "2009-12-31"
+        "frequency": "Daily"
     }
-    save_dataframe(df, "benchmarks_daily", RAW_DATA_DIR, metadata)
+
+    # Use incremental fetching
+    df = fetch_incremental_or_full(
+        filename="benchmarks_daily",
+        data_dir=RAW_DATA_DIR,
+        fetch_function=_fetch_benchmarks_data,
+        full_start_date=CONFIG.DATA_START_DATE,
+        metadata_template=metadata,
+        verbose=True
+    )
 
     return df
 
@@ -247,13 +264,13 @@ def fetch_holidays() -> pd.DataFrame:
     today_str = date.today().strftime("%Y-%m-%d")
 
     with lseg_session():
-        df = get_holidays(start_date="2016-01-01", end_date=today_str)
+        df = get_holidays(start_date=CONFIG.HOLIDAYS_START_DATE, end_date=today_str)
 
     # Save
     metadata = {
         "description": "GCC holiday calendar",
         "calendars": CONFIG.HOLIDAY_CALENDARS,
-        "start_date": "2016-01-01",
+        "start_date": CONFIG.HOLIDAYS_START_DATE,
         "end_date": today_str,
         "note": "LSEG API cannot retrieve holidays before 2016-01-01"
     }
@@ -263,7 +280,7 @@ def fetch_holidays() -> pd.DataFrame:
 
 
 def fetch_fx_rates() -> pd.DataFrame:
-    """Fetch and save USD FX rates for GCC currencies.
+    """Fetch and save USD FX rates for GCC currencies (with incremental fetching support).
 
     Returns:
         DataFrame with daily FX rates.
@@ -283,18 +300,28 @@ def fetch_fx_rates() -> pd.DataFrame:
         "BHD="   # Bahraini Dinar
     ]
 
-    with lseg_session():
-        df = get_fx_rates(currency_pairs, start_date="2009-12-31")
+    def _fetch_fx_data(start_date: str) -> pd.DataFrame:
+        """Inner function to fetch FX data from start_date."""
+        with lseg_session():
+            return get_fx_rates(currency_pairs, start_date=start_date)
 
-    # Save
+    # Metadata template
     metadata = {
         "description": "Daily USD FX rates for GCC currencies",
         "currency_pairs": currency_pairs,
         "frequency": "Daily",
-        "start_date": "2009-12-31",
         "note": "Rates are USD/CCY (how many local currency per 1 USD)"
     }
-    save_dataframe(df, "fx_rates_daily", RAW_DATA_DIR, metadata)
+
+    # Use incremental fetching
+    df = fetch_incremental_or_full(
+        filename="fx_rates_daily",
+        data_dir=RAW_DATA_DIR,
+        fetch_function=_fetch_fx_data,
+        full_start_date=CONFIG.DATA_START_DATE,
+        metadata_template=metadata,
+        verbose=True
+    )
 
     return df
 

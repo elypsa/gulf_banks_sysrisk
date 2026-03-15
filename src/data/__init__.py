@@ -19,6 +19,10 @@ from .data_quality import (
     generate_missing_data_report,
     print_data_quality_summary
 )
+from .incremental import (
+    get_latest_date,
+    fetch_incremental_or_full
+)
 
 __all__ = [
     "lseg_session",
@@ -33,5 +37,7 @@ __all__ = [
     "check_data_freshness",
     "list_saved_data",
     "generate_missing_data_report",
-    "print_data_quality_summary"
+    "print_data_quality_summary",
+    "get_latest_date",
+    "fetch_incremental_or_full"
 ]

@@ -65,7 +65,7 @@ def hijri_to_gregorian_range(hijri_year: int, month: int, day: int, duration: in
     return dates
 
 
-def reconstruct_islamic_holidays(start_year: int = 2010, end_year: int = 2026) -> pd.DataFrame:
+def reconstruct_islamic_holidays(start_year: int = 2005, end_year: int = 2026) -> pd.DataFrame:
     """Reconstruct Islamic holidays for years before 2016.
 
     LSEG API cannot provide holidays before 2016, so we reconstruct them
@@ -175,7 +175,7 @@ def expand_national_holidays(start_year: int, end_year: int) -> pd.DataFrame:
 
 
 def create_gcc_holiday_calendar(
-    start_date: str = "2010-01-01",
+    start_date: str = "2005-01-01",
     end_date: Optional[str] = None,
     lseg_holidays: Optional[pd.DataFrame] = None
 ) -> pd.DataFrame:

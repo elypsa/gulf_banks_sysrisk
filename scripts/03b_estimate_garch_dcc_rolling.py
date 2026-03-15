@@ -89,6 +89,7 @@ def main():
         benchmark_name=benchmark_name,
         window_days=CONFIG.ROLLING_WINDOW_DAYS,
         step_days=CONFIG.ROLLING_STEP_DAYS,
+        start_date=CONFIG.ROLLING_WINDOW_START_DATE,
         n_jobs=CONFIG.ROLLING_N_JOBS,
         min_crisis_paths=CONFIG.ROLLING_MIN_CRISIS_PATHS
     )

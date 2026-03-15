@@ -28,7 +28,7 @@ class SRISKConfig:
     # LRMES parameters
     CRISIS_HORIZON_WEEKS: int = 22  # 6 months in trading weeks
     CRISIS_THRESHOLD: float = -0.15  # -15% market decline (percentage, converted to log return internally)
-    N_SIMULATIONS: int = 75000  # Monte Carlo paths
+    N_SIMULATIONS: int = 40000  # Monte Carlo paths
     RANDOM_SEED: int = 42  # For reproducibility
 
     # Note on CRISIS_THRESHOLD:
@@ -49,10 +49,13 @@ class SRISKConfig:
     ROLLING_WINDOW_ENABLED: bool = True  # Enable rolling window estimation
     ROLLING_WINDOW_DAYS: int = 1260  # 5 years of trading days (252 * 5)
     ROLLING_STEP_DAYS: int = 5  # Weekly step size (5 trading days)
+    ROLLING_WINDOW_START_DATE: str = "2026-01-01"  # Start date for rolling window calculations (window end dates >= this date)
     ROLLING_N_JOBS: int = -1  # Number of parallel jobs (-1 = all CPUs)
     ROLLING_MIN_CRISIS_PATHS: int = 500  # Minimum crisis scenarios required
 
     # Data parameters
+    DATA_START_DATE: str = "2005-12-31"  # Unified start date for market data, fundamentals, benchmarks, FX
+    HOLIDAYS_START_DATE: str = "2016-01-01"  # LSEG API limitation: cannot retrieve holidays before 2016-01-01
     FUNDAMENTAL_LAG_DAYS: int = 45  # Reporting delay for quarterly data
     MIN_TRADING_DAYS: int = 252  # Minimum history required (1 year)
     RECOMMENDED_TRADING_DAYS: int = 500  # Recommended history (2 years)

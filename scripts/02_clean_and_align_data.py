@@ -33,6 +33,10 @@ from src.data.processing import (
     filter_banks_by_data_quality
 )
 from src.utils.config import CONFIG, RAW_DATA_DIR, PROCESSED_DATA_DIR
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+import numpy as np
+import pandas as pd
 
 
 def load_raw_data():
@@ -59,7 +63,7 @@ def create_master_calendar(holidays_lseg):
 
     # Create calendar from 2010 to present
     holidays = create_gcc_holiday_calendar(
-        start_date="2010-01-01",
+        start_date=CONFIG.DATA_START_DATE,
         lseg_holidays=holidays_lseg
     )
 
@@ -67,11 +71,83 @@ def create_master_calendar(holidays_lseg):
     metadata = {
         "description": "Comprehensive GCC holiday calendar",
         "sources": ["LSEG API (2016+)", "Hijri reconstruction", "National holidays"],
-        "start_date": "2010-01-01"
+        "start_date": CONFIG.HOLIDAYS_START_DATE
     }
     save_dataframe(holidays, "gcc_holidays_full", PROCESSED_DATA_DIR, metadata)
 
     return holidays
+
+
+def create_returns_chart(bank_returns, bench_returns, bank_universe, output_dir):
+    """Create multi-panel chart showing returns for benchmark and banks (5 banks per panel).
+
+    Args:
+        bank_returns: DataFrame with bank returns (columns = bank RICs).
+        bench_returns: DataFrame with benchmark returns.
+        bank_universe: DataFrame with bank metadata (bank_ric, country_chain).
+        output_dir: Directory to save the chart.
+    """
+    # Use the broad benchmark
+    main_benchmark_ric = CONFIG.BENCHMARK_BROAD
+
+    # Get all bank RICs that are in the returns data
+    all_bank_rics = [ric for ric in bank_returns.columns if ric in bank_universe['bank_ric'].values]
+
+    # Split banks into groups of 5
+    banks_per_panel = 5
+    bank_groups = [all_bank_rics[i:i + banks_per_panel]
+                   for i in range(0, len(all_bank_rics), banks_per_panel)]
+
+    # Create figure with subplots (1 for benchmark + panels for bank groups)
+    n_bank_panels = len(bank_groups)
+    n_panels = 1 + n_bank_panels
+    fig, axes = plt.subplots(n_panels, 1, figsize=(16, 2.5 * n_panels), sharex=True)
+
+    if n_panels == 1:
+        axes = [axes]
+
+    # Panel 0: Main benchmark
+    ax = axes[0]
+    if main_benchmark_ric in bench_returns.columns:
+        bench_returns[main_benchmark_ric].plot(ax=ax, color='black', linewidth=1.5, label=main_benchmark_ric)
+    ax.set_ylabel('Return (%)', fontsize=10)
+    ax.set_title(f'Benchmark: {main_benchmark_ric}', fontsize=11, fontweight='bold')
+    ax.axhline(0, color='gray', linestyle='--', linewidth=0.5, alpha=0.5)
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc='upper left', fontsize=9)
+
+    # Panels 1+: Banks (5 per panel)
+    for i, bank_group in enumerate(bank_groups, start=1):
+        ax = axes[i]
+
+        # Plot each bank in this group
+        for bank_ric in bank_group:
+            bank_returns[bank_ric].plot(ax=ax, linewidth=1.0, alpha=0.8, label=bank_ric)
+
+        ax.set_ylabel('Return (%)', fontsize=10)
+        panel_num = i
+        ax.set_title(f'Banks {(i-1)*banks_per_panel + 1}-{(i-1)*banks_per_panel + len(bank_group)} (Panel {panel_num})',
+                     fontsize=11, fontweight='bold')
+        ax.axhline(0, color='gray', linestyle='--', linewidth=0.5, alpha=0.5)
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc='upper left', fontsize=8, ncol=1)
+
+    # Format x-axis (only bottom panel)
+    axes[-1].set_xlabel('Date', fontsize=10)
+    axes[-1].xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
+    axes[-1].xaxis.set_major_locator(mdates.YearLocator())
+
+    plt.tight_layout()
+
+    # Save figure
+    output_path = output_dir / 'returns_by_country.png'
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+
+    print(f"\n✓ Returns chart saved to: {output_path}")
+    print(f"  - Panels: {n_panels} (1 benchmark + {n_bank_panels} bank panels)")
+    print(f"  - Total banks plotted: {len(all_bank_rics)}")
+    print(f"  - Banks per panel: {banks_per_panel} (last panel: {len(bank_groups[-1])} banks)")
 
 
 def main():
@@ -157,20 +233,60 @@ def main():
         print(f"  - Passed banks: {viz_dir}/passed/")
         print(f"  - Dropped banks: {viz_dir}/dropped/")
 
-        # 7. Save processed data
+        # 7. Filter outliers in bank returns
+        print("\n" + "=" * 60)
+        print("FILTERING OUTLIERS IN BANK RETURNS")
+        print("=" * 60)
+
+        # Extract bank return columns
+        bank_ret_cols = [col for col in clean_data.columns if col.startswith("ret_")]
+
+        # Calculate percentiles across ALL bank returns (pooled)
+        all_returns = clean_data[bank_ret_cols].values.flatten()
+        all_returns_clean = all_returns[~pd.isna(all_returns)]
+
+        p1 = np.percentile(all_returns_clean, 1)
+        p99 = np.percentile(all_returns_clean, 99)
+
+        print(f"\nOutlier thresholds (across all banks):")
+        print(f"  - 1st percentile: {p1:.4f}%")
+        print(f"  - 99th percentile: {p99:.4f}%")
+
+        # Count outliers before filtering
+        outliers_below = (clean_data[bank_ret_cols] < p1).sum().sum()
+        outliers_above = (clean_data[bank_ret_cols] > p99).sum().sum()
+        total_outliers = outliers_below + outliers_above
+        total_observations = (~clean_data[bank_ret_cols].isna()).sum().sum()
+
+        print(f"\nOutliers detected:")
+        print(f"  - Below 1st percentile: {outliers_below:,} observations")
+        print(f"  - Above 99th percentile: {outliers_above:,} observations")
+        print(f"  - Total outliers: {total_outliers:,} / {total_observations:,} ({100*total_outliers/total_observations:.2f}%)")
+
+        # Replace outliers with NaN
+        for col in bank_ret_cols:
+            clean_data.loc[clean_data[col] < p1, col] = np.nan
+            clean_data.loc[clean_data[col] > p99, col] = np.nan
+
+        print(f"\n✓ Outliers replaced with NaN")
+        print(f"  Note: NaNs will be dropped in pairwise GARCH-DCC estimation")
+
+        # 8. Save processed data
         print("\n" + "=" * 60)
         print("SAVING PROCESSED DATA")
         print("=" * 60)
 
         # Save aligned data
         metadata_aligned = {
-            "description": "Aligned daily data (all sources merged, USD from LSEG)",
+            "description": "Aligned daily data (all sources merged, USD from LSEG, outliers filtered)",
             "trading_days": len(clean_data),
             "num_banks": clean_universe["bank_ric"].nunique(),
             "start_date": str(clean_data.index.min().date()),
             "end_date": str(clean_data.index.max().date()),
             "currency": "USD (converted by LSEG on-the-fly)",
             "quality_filtered": True,
+            "outlier_filtered": True,
+            "outlier_thresholds": f"p1={p1:.4f}%, p99={p99:.4f}%",
             "min_trading_days": CONFIG.MIN_TRADING_DAYS
         }
         save_dataframe(clean_data, "aligned_daily_data", PROCESSED_DATA_DIR, metadata_aligned)
@@ -191,10 +307,12 @@ def main():
         bank_returns.columns = [col.replace("ret_", "") for col in bank_returns.columns]
 
         metadata_bank_returns = {
-            "description": "Bank log returns for GARCH-DCC estimation",
+            "description": "Bank log returns for GARCH-DCC estimation (outliers filtered)",
             "trading_days": len(bank_returns),
             "num_banks": len(bank_returns.columns),
             "return_type": "log",
+            "outlier_filtered": True,
+            "outlier_thresholds": f"p1={p1:.4f}%, p99={p99:.4f}%",
             "ready_for_garch": True
         }
         save_dataframe(bank_returns, "returns_banks_clean", PROCESSED_DATA_DIR, metadata_bank_returns)
@@ -240,10 +358,28 @@ def main():
         print(f"  - returns_benchmarks_clean.parquet (benchmark returns only)")
         print(f"  - banks_universe_clean.parquet (filtered universe)")
         print(f"\nData quality plots saved to: {viz_dir}")
+
+        # 8. Create returns visualization
+        print("\n" + "=" * 60)
+        print("CREATING RETURNS VISUALIZATION")
+        print("=" * 60)
+
+        create_returns_chart(
+            bank_returns=bank_returns,
+            bench_returns=bench_returns,
+            bank_universe=clean_universe,
+            output_dir=PROCESSED_DATA_DIR
+        )
+
+        print(f"\nOutlier filtering summary:")
+        print(f"  - Thresholds: {p1:.4f}% (p1) to {p99:.4f}% (p99)")
+        print(f"  - Outliers removed: {total_outliers:,} ({100*total_outliers/total_observations:.2f}%)")
+
         print("\nNext steps:")
         print("  1. Review data quality plots in: data/processed/data_quality_plots/")
         print("  2. Check missing_data_summary.csv for detailed statistics")
-        print("  3. Run GARCH-DCC estimation: scripts/03_estimate_garch_dcc.py")
+        print("  3. Review returns chart: data/processed/returns_by_country.png")
+        print("  4. Run GARCH-DCC estimation: scripts/03_estimate_garch_dcc.py")
 
     except Exception as e:
         print(f"\n✗ ERROR: {e}")
