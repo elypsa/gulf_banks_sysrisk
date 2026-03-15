@@ -45,6 +45,12 @@ class SRISKConfig:
     # DCC parameters
     DCC_ENABLED: bool = True  # Use DCC, else CCC
 
+    # CoVaR parameters
+    COVAR_VAR_QUANTILE: float = 0.05  # Quantile for bank VaR estimation (5%)
+    COVAR_SYSTEM_QUANTILE: float = 0.05  # Quantile for system CoVaR estimation (5%)
+    COVAR_MEDIAN_QUANTILE: float = 0.50  # Median quantile for ΔCoVaR calculation (50%)
+    COVAR_VOL_WINDOW: int = 252  # Rolling window for benchmark volatility (1 year)
+
     # Rolling window parameters
     ROLLING_WINDOW_ENABLED: bool = True  # Enable rolling window estimation
     ROLLING_WINDOW_DAYS: int = 1260  # 5 years of trading days (252 * 5)

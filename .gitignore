@@ -31,3 +31,6 @@ srisks.md
 DATA_STRUCTURE.md
 
 materials/
+
+# ignore .env
+.env

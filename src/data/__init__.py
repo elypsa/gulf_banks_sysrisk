@@ -23,6 +23,11 @@ from .incremental import (
     get_latest_date,
     fetch_incremental_or_full
 )
+from .fred_fetcher import (
+    fetch_fred_series,
+    fetch_fred_multiple,
+    fetch_systemic_risk_indicators
+)
 
 __all__ = [
     "lseg_session",
@@ -39,5 +44,8 @@ __all__ = [
     "generate_missing_data_report",
     "print_data_quality_summary",
     "get_latest_date",
-    "fetch_incremental_or_full"
+    "fetch_incremental_or_full",
+    "fetch_fred_series",
+    "fetch_fred_multiple",
+    "fetch_systemic_risk_indicators"
 ]

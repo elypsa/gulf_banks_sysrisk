@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "arch>=8.0.0",
+    "fredapi>=0.5.2",
     "hijri-converter>=2.3.2.post1",
     "ipykernel>=7.2.0",
     "joblib>=1.5.3",
@@ -14,6 +15,7 @@ dependencies = [
     "matplotlib>=3.10.8",
     "pandas>=2.3.3",
     "pyarrow>=23.0.1",
+    "python-dotenv>=1.2.2",
     "seaborn>=0.13.2",
     "tqdm>=4.67.3",
 ]

@@ -52,7 +52,15 @@ def load_raw_data():
     # fx_rates = load_dataframe("fx_rates_daily", RAW_DATA_DIR)  # DISABLED: Using LSEG USD conversion
     holidays_lseg = load_dataframe("holidays_calendar", RAW_DATA_DIR)
 
-    return universe, fundamentals, market_data, benchmarks, holidays_lseg
+    # Load FRED indicators (optional - may not exist yet)
+    try:
+        fred_indicators = load_dataframe("fred_indicators", RAW_DATA_DIR)
+        print("  ✓ FRED indicators loaded")
+    except FileNotFoundError:
+        print("  ⚠ FRED indicators not found - run scripts/01b_fetch_fred_data.py first")
+        fred_indicators = None
+
+    return universe, fundamentals, market_data, benchmarks, holidays_lseg, fred_indicators
 
 
 def create_master_calendar(holidays_lseg):
@@ -158,7 +166,7 @@ def main():
 
     try:
         # 1. Load raw data
-        universe, fundamentals, market_data, benchmarks, holidays_lseg = load_raw_data()
+        universe, fundamentals, market_data, benchmarks, holidays_lseg, fred_indicators = load_raw_data()
 
         # 2. Create master calendar
         holidays = create_master_calendar(holidays_lseg)
@@ -333,6 +341,58 @@ def main():
         }
         save_dataframe(bench_returns, "returns_benchmarks_clean", PROCESSED_DATA_DIR, metadata_bench_returns)
 
+        # 9. Process FRED indicators (if available)
+        if fred_indicators is not None:
+            print("\n" + "=" * 60)
+            print("PROCESSING FRED INDICATORS")
+            print("=" * 60)
+
+            # Align FRED data to GCC trading days
+            print(f"\nAligning FRED data to GCC trading days...")
+            print(f"  Original FRED data: {len(fred_indicators)} observations")
+
+            # Reindex to GCC trading days (will create NaN for missing dates)
+            fred_aligned = fred_indicators.reindex(clean_data.index)
+
+            # Count NaNs before forward fill
+            nans_before = fred_aligned.isna().sum()
+            print(f"\n  NaN values after alignment (before forward-fill):")
+            for col in fred_aligned.columns:
+                print(f"    {col}: {nans_before[col]} NaNs ({100*nans_before[col]/len(fred_aligned):.2f}%)")
+
+            # Forward-fill to propagate Friday values to Sunday trading days
+            print(f"\n  Applying forward-fill (Friday → Sunday for GCC trading days)...")
+            fred_aligned = fred_aligned.ffill()
+
+            # Count remaining NaNs after forward fill
+            nans_after = fred_aligned.isna().sum()
+            if nans_after.sum() > 0:
+                print(f"\n  Remaining NaN values after forward-fill:")
+                for col in fred_aligned.columns:
+                    if nans_after[col] > 0:
+                        print(f"    {col}: {nans_after[col]} NaNs ({100*nans_after[col]/len(fred_aligned):.2f}%)")
+            else:
+                print(f"  ✓ No remaining NaN values after forward-fill")
+
+            # Save aligned FRED indicators
+            metadata_fred = {
+                "description": "FRED systemic risk indicators aligned to GCC trading days",
+                "series": {
+                    "VIXCLS": "CBOE Volatility Index",
+                    "T10Y3M": "10Y-3M Treasury spread"
+                },
+                "trading_days": len(fred_aligned),
+                "start_date": str(fred_aligned.index.min().date()),
+                "end_date": str(fred_aligned.index.max().date()),
+                "alignment": "Reindexed to GCC trading days with forward-fill",
+                "source": "Federal Reserve Economic Data (FRED)"
+            }
+            save_dataframe(fred_aligned, "fred_indicators_aligned", PROCESSED_DATA_DIR, metadata_fred)
+
+            print(f"\n✓ FRED indicators aligned and saved")
+            print(f"  - Observations: {len(fred_aligned)}")
+            print(f"  - Series: {', '.join(fred_aligned.columns.tolist())}")
+
         # Summary statistics
         print("\n" + "=" * 60)
         print("✓ DATA CLEANING COMPLETED")
@@ -357,6 +417,8 @@ def main():
         print(f"  - returns_banks_clean.parquet (bank returns only)")
         print(f"  - returns_benchmarks_clean.parquet (benchmark returns only)")
         print(f"  - banks_universe_clean.parquet (filtered universe)")
+        if fred_indicators is not None:
+            print(f"  - fred_indicators_aligned.parquet (FRED macro indicators)")
         print(f"\nData quality plots saved to: {viz_dir}")
 
         # 8. Create returns visualization
