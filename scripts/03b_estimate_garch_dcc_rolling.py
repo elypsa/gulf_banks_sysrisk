@@ -25,6 +25,7 @@ Usage:
 
 import sys
 from pathlib import Path
+import logging
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -34,6 +35,22 @@ from src.models.rolling_window import RollingWindowEstimator
 from src.utils.config import CONFIG, PROCESSED_DATA_DIR, RESULTS_DATA_DIR
 import pandas as pd
 import numpy as np
+
+# Configure logging to suppress warnings that interfere with progress bar
+# Warnings are logged to file instead of printed to stdout
+logging.basicConfig(
+    level=logging.WARNING,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(RESULTS_DATA_DIR / 'rolling_estimation.log'),
+        # Only show ERROR and CRITICAL to stdout (not WARNING)
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+# Set stdout handler to only show errors
+for handler in logging.getLogger().handlers:
+    if isinstance(handler, logging.StreamHandler) and handler.stream == sys.stdout:
+        handler.setLevel(logging.ERROR)
 
 
 def load_processed_data():
@@ -58,6 +75,13 @@ def load_processed_data():
 
 def main():
     """Main execution function for rolling window estimation."""
+
+    print("\n" + "=" * 80)
+    print("ROLLING WINDOW GARCH-DCC-LRMES ESTIMATION")
+    print("=" * 80)
+    print(f"Logging: Warnings written to {RESULTS_DATA_DIR / 'rolling_estimation.log'}")
+    print(f"         (stdout only shows errors to preserve progress bar)")
+    print("=" * 80)
 
     # Check if rolling window is enabled
     if not CONFIG.ROLLING_WINDOW_ENABLED:
@@ -162,6 +186,15 @@ def main():
     print(f"  Average bank GARCH persistence: {panel['garch_persistence'].mean():.4f}")
     print(f"  Average DCC persistence: {panel['dcc_persistence'].mean():.4f}")
 
+    # Importance sampling statistics (if enabled)
+    if 'efficiency_ratio' in panel.columns:
+        print(f"\nImportance sampling statistics:")
+        print(f"  Average efficiency ratio: {panel['efficiency_ratio'].mean():.2%}")
+        print(f"  Average ESS: {panel['effective_sample_size'].mean():.0f}")
+        print(f"  Min efficiency: {panel['efficiency_ratio'].min():.2%}")
+        print(f"  Max efficiency: {panel['efficiency_ratio'].max():.2%}")
+        print(f"  Std efficiency: {panel['efficiency_ratio'].std():.2%}")
+
     # Time series analysis
     print(f"\nTime series analysis:")
     lrmes_by_window = panel.groupby('window_date')['lrmes'].mean()
@@ -180,6 +213,7 @@ def main():
     print("\n" + "=" * 80)
     print("ROLLING WINDOW ESTIMATION COMPLETE")
     print("=" * 80)
+    print(f"\nWarnings logged to: {RESULTS_DATA_DIR / 'rolling_estimation.log'}")
     print(f"\nNext step: Run 04_calculate_srisk.py to compute time-varying SRISK")
 
 

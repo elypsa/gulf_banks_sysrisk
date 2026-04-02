@@ -126,6 +126,9 @@ class RollingWindowEstimator:
         print(f"  Total observations: {len(self.bank_returns)}")
         print(f"  Banks: {len(self.bank_returns.columns)}")
         print(f"  Parallel jobs: {self.n_jobs if self.n_jobs > 0 else 'all CPUs'}")
+        print(f"  Importance sampling: {'ENABLED' if CONFIG.USE_IMPORTANCE_SAMPLING else 'DISABLED'}")
+        if CONFIG.USE_IMPORTANCE_SAMPLING:
+            print(f"  mu_tilt: {CONFIG.MU_TILT}")
 
     def generate_window_dates(self) -> List[pd.Timestamp]:
         """Generate list of window end dates with weekly steps.
@@ -302,11 +305,16 @@ class RollingWindowEstimator:
         df = pd.DataFrame(results)
         df['window_date'] = window_date
 
-        # Reorder columns
+        # Reorder columns (base columns always present)
         cols = ['window_date', 'bank_ric', 'lrmes', 'n_crisis_scenarios',
                 'crisis_probability', 'avg_bank_loss_in_crisis', 'avg_market_loss_in_crisis',
                 'avg_correlation', 'garch_persistence', 'dcc_a', 'dcc_b',
                 'dcc_persistence', 'convergence']
+
+        # Add importance sampling columns if present
+        if 'efficiency_ratio' in df.columns:
+            cols.extend(['effective_sample_size', 'efficiency_ratio', 'avg_importance_weight'])
+
         df = df[cols]
 
         if verbose:
@@ -376,14 +384,16 @@ class RollingWindowEstimator:
             dcc_diag = dcc_diagnostics(dcc_result, [bank_ric, self.benchmark_name])
             avg_corr = dcc_diag['avg_correlation'].iloc[0]
 
-            # 4. Simulate bivariate GARCH-DCC
+            # 4. Simulate bivariate GARCH-DCC with optional importance sampling
             simulation = simulate_bivariate_garch_dcc(
                 bank_garch_result=bank_garch_result,
                 market_garch_result=benchmark_garch_result,
                 dcc_result=dcc_result,
                 horizon=CONFIG.CRISIS_HORIZON_WEEKS,
                 n_simulations=CONFIG.N_SIMULATIONS,
-                random_seed=None
+                random_seed=None,
+                use_importance_sampling=CONFIG.USE_IMPORTANCE_SAMPLING,
+                mu_tilt=CONFIG.MU_TILT
             )
 
             # 5. Calculate LRMES
@@ -408,6 +418,12 @@ class RollingWindowEstimator:
                 'avg_correlation': lrmes_dict['avg_correlation'],
                 'convergence': True
             }
+
+            # Add importance sampling diagnostics if available
+            if lrmes_dict.get('use_importance_sampling'):
+                result['effective_sample_size'] = lrmes_dict['effective_sample_size']
+                result['efficiency_ratio'] = lrmes_dict['efficiency_ratio']
+                result['avg_importance_weight'] = lrmes_dict['avg_importance_weight']
 
             return result
 

@@ -28,8 +28,19 @@ class SRISKConfig:
     # LRMES parameters
     CRISIS_HORIZON_WEEKS: int = 22  # 6 months in trading weeks
     CRISIS_THRESHOLD: float = -0.15  # -15% market decline (percentage, converted to log return internally)
-    N_SIMULATIONS: int = 40000  # Monte Carlo paths
+    N_SIMULATIONS: int = 50000  # Monte Carlo paths
     RANDOM_SEED: int = 42  # For reproducibility
+
+    # Importance sampling parameters
+    USE_IMPORTANCE_SAMPLING: bool = True  # Enable variance reduction via importance sampling
+    MU_TILT: float = -0.35  # Mean shift for market shocks (< 0 to tilt toward crises)
+
+    # Note on MU_TILT:
+    # - Tilts the market shock distribution from N(0,1) to N(mu_tilt, 1)
+    # - Negative values increase crisis probability, reducing simulation variance
+    # - Typical values: -0.3 to -1.0 (more negative = more aggressive tilting)
+    # - Importance weights correct for bias introduced by tilting
+    # - Set USE_IMPORTANCE_SAMPLING=False to disable (use standard sampling)
 
     # Note on CRISIS_THRESHOLD:
     # - Specified as percentage decline (e.g., -0.15 = -15%)

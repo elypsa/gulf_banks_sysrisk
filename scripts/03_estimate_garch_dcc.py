@@ -94,7 +94,6 @@ def process_bank_bivariate(
 ) -> dict:
     """Process one bank using proper bivariate GARCH-DCC simulation.
 
-    This implements the CORRECT methodology from Section 5.2 of srisks.md:
     - Bank and market returns simulated JOINTLY in each path
     - Both volatilities and correlations update dynamically along each path
     - Follows exact 5-step algorithm: initialize, generate shocks, compute returns,
@@ -174,13 +173,16 @@ def process_bank_bivariate(
 
         # 4. Simulate bivariate GARCH-DCC (CORRECT methodology)
         # Both bank and market returns simulated jointly with dynamic vol & corr
+        # With optional importance sampling for variance reduction
         simulation = simulate_bivariate_garch_dcc(
             bank_garch_result=bank_garch_result,
             market_garch_result=benchmark_garch_result,
             dcc_result=dcc_result,
             horizon=CONFIG.CRISIS_HORIZON_WEEKS,
             n_simulations=CONFIG.N_SIMULATIONS,
-            random_seed=None  # Different seed per bank for independence
+            random_seed=None,  # Different seed per bank for independence
+            use_importance_sampling=CONFIG.USE_IMPORTANCE_SAMPLING,
+            mu_tilt=CONFIG.MU_TILT
         )
 
         # 5. Calculate LRMES from bivariate simulation
@@ -212,6 +214,12 @@ def process_bank_bivariate(
             'avg_correlation': lrmes_dict['avg_correlation'],
             'convergence': True
         }
+
+        # Add importance sampling diagnostics if available
+        if lrmes_dict.get('use_importance_sampling'):
+            result['effective_sample_size'] = lrmes_dict['effective_sample_size']
+            result['efficiency_ratio'] = lrmes_dict['efficiency_ratio']
+            result['avg_importance_weight'] = lrmes_dict['avg_importance_weight']
 
         return result
 
@@ -390,6 +398,10 @@ def main():
     print("\nMethodology: Each bank modeled in bivariate GARCH-DCC with market")
     print("Following Section 5.2 of srisks.md - proper joint simulation")
     print("with dynamic volatilities and correlations")
+    print("\nVariance Reduction:")
+    print(f"  Importance sampling: {'ENABLED' if CONFIG.USE_IMPORTANCE_SAMPLING else 'DISABLED'}")
+    if CONFIG.USE_IMPORTANCE_SAMPLING:
+        print(f"  mu_tilt: {CONFIG.MU_TILT} (Section 5.6 of srisks.md)")
     print("=" * 60)
 
     try:
@@ -501,13 +513,19 @@ def main():
 
         # Run sample bivariate simulation
         print(f"Running sample simulation for {sample_bank_ric}...")
+        print(f"  Importance sampling: {'ENABLED' if CONFIG.USE_IMPORTANCE_SAMPLING else 'DISABLED'}")
+        if CONFIG.USE_IMPORTANCE_SAMPLING:
+            print(f"  mu_tilt: {CONFIG.MU_TILT} (tilting market shocks toward crises)")
+
         sample_simulation = simulate_bivariate_garch_dcc(
             bank_garch_result=sample_bank_garch,
             market_garch_result=benchmark_garch,
             dcc_result=sample_dcc_result,
             horizon=CONFIG.CRISIS_HORIZON_WEEKS,
             n_simulations=CONFIG.N_SIMULATIONS,
-            random_seed=CONFIG.RANDOM_SEED  # Fixed seed for reproducibility
+            random_seed=CONFIG.RANDOM_SEED,  # Fixed seed for reproducibility
+            use_importance_sampling=CONFIG.USE_IMPORTANCE_SAMPLING,
+            mu_tilt=CONFIG.MU_TILT
         )
 
         # Extract market paths for visualization
@@ -524,12 +542,32 @@ def main():
         crisis_mask_sample = market_paths_sample["cumulative_returns"] < crisis_threshold_log
         n_market_crisis_sample = crisis_mask_sample.sum()
 
+        # Calculate sample LRMES to get importance sampling diagnostics
+        sample_lrmes_result = calculate_lrmes_from_bivariate(
+            simulation_result=sample_simulation,
+            crisis_threshold=CONFIG.CRISIS_THRESHOLD,
+            min_crisis_scenarios=500
+        )
+
         print(f"\n✓ Sample simulation completed")
         print(f"  Bank: {sample_bank_ric}")
         print(f"  Crisis threshold: {CONFIG.CRISIS_THRESHOLD*100:.0f}% decline = {crisis_threshold_log:.4f}% (log)")
         print(f"  Crisis scenarios: {n_market_crisis_sample:,} ({n_market_crisis_sample/CONFIG.N_SIMULATIONS*100:.2f}%)")
         print(f"  Market avg return: {market_paths_sample['cumulative_returns'].mean():.4f}%")
         print(f"  Market avg return in crisis: {market_paths_sample['cumulative_returns'][crisis_mask_sample].mean():.4f}%")
+
+        # Show importance sampling diagnostics if enabled
+        if sample_lrmes_result.get('use_importance_sampling'):
+            print(f"\n  Importance Sampling Diagnostics:")
+            print(f"    Effective Sample Size (ESS): {sample_lrmes_result['effective_sample_size']:.0f}")
+            print(f"    Efficiency ratio (ESS/N_crisis): {sample_lrmes_result['efficiency_ratio']:.2%}")
+            print(f"    Avg importance weight: {sample_lrmes_result['avg_importance_weight']:.4f}")
+            print(f"    Weight range: [{sample_lrmes_result['min_importance_weight']:.4f}, {sample_lrmes_result['max_importance_weight']:.4f}]")
+
+            if sample_lrmes_result['efficiency_ratio'] < 0.5:
+                print(f"    ⚠ Low efficiency (<50%) - consider adjusting mu_tilt closer to 0")
+            elif sample_lrmes_result['efficiency_ratio'] > 0.9:
+                print(f"    ✓ High efficiency (>90%) - importance sampling working well")
 
         # Visualize and save market paths
         print("\nGenerating market paths visualization...")
@@ -588,8 +626,15 @@ def main():
             "n_simulations": CONFIG.N_SIMULATIONS,
             "n_banks": len(results_df),
             "avg_crisis_scenarios": int(results_df['n_crisis_scenarios'].mean()),
-            "avg_crisis_probability": float(results_df['crisis_probability'].mean())
+            "avg_crisis_probability": float(results_df['crisis_probability'].mean()),
+            "use_importance_sampling": CONFIG.USE_IMPORTANCE_SAMPLING,
+            "mu_tilt": CONFIG.MU_TILT if CONFIG.USE_IMPORTANCE_SAMPLING else None
         }
+
+        # Add importance sampling summary if used
+        if CONFIG.USE_IMPORTANCE_SAMPLING and 'efficiency_ratio' in results_df.columns:
+            metadata["avg_efficiency_ratio"] = float(results_df['efficiency_ratio'].mean())
+            metadata["avg_effective_sample_size"] = float(results_df['effective_sample_size'].mean())
         save_dataframe(results_df, "lrmes_estimates", RESULTS_DATA_DIR, metadata)
 
         # Save summary statistics
@@ -616,13 +661,23 @@ def main():
         print(f"Average bank-market correlation: {summary['avg_correlation']:.4f}")
         print(f"Average crisis probability: {summary['avg_crisis_probability']*100:.2f}%")
 
+        # Show importance sampling summary if used
+        if CONFIG.USE_IMPORTANCE_SAMPLING and 'efficiency_ratio' in results_df.columns:
+            print(f"\nImportance Sampling Performance:")
+            print(f"  Average efficiency ratio: {results_df['efficiency_ratio'].mean():.2%}")
+            print(f"  Average ESS: {results_df['effective_sample_size'].mean():.0f}")
+            print(f"  Min efficiency: {results_df['efficiency_ratio'].min():.2%}")
+            print(f"  Max efficiency: {results_df['efficiency_ratio'].max():.2%}")
+
         print("\n" + "=" * 60)
-        print("METHODOLOGY HIGHLIGHT (Section 5.2 of srisks.md)")
+        print("METHODOLOGY HIGHLIGHT")
         print("=" * 60)
-        print("✓ Bank and market returns simulated JOINTLY in each path")
+        print("✓ Bank and market returns simulated JOINTLY in each path (Section 5.2)")
         print("✓ Volatilities updated via GJR-GARCH: σ²_t+1 = ω + αε²_t + γε²_tI[ε_t<0] + βσ²_t")
         print("✓ Correlations updated via DCC: Q_t+1 = (1-a-b)Q̄ + a(z_t z_t^T) + b Q_t")
         print("✓ Proper bivariate dynamics (not conditional on fixed market paths)")
+        if CONFIG.USE_IMPORTANCE_SAMPLING:
+            print(f"✓ Importance sampling for variance reduction (Section 5.6, μ_tilt={CONFIG.MU_TILT})")
 
         print("\n" + "=" * 60)
         print("Top 10 banks by LRMES (highest systemic risk):")

@@ -26,7 +26,46 @@ References:
 import pandas as pd
 import numpy as np
 from typing import Dict, Optional
-import warnings
+import logging
+from scipy.stats import norm
+
+# Configure logger for LRMES module
+logger = logging.getLogger(__name__)
+
+
+def compute_importance_weight(z_market: np.ndarray, mu_tilt: float) -> np.ndarray:
+    """Compute importance sampling weight for tilted distribution.
+
+    Under importance sampling, we sample market shocks from N(mu_tilt, 1) instead
+    of N(0, 1) to increase the probability of crisis scenarios. This function
+    computes the importance weight to correct for this bias.
+
+    Mathematical formula:
+        w = φ(z; 0, 1) / φ(z; μ_tilt, 1)
+          = exp(-z²/2) / exp(-(z - μ_tilt)²/2)
+          = exp(μ_tilt·z - μ_tilt²/2)
+
+    Args:
+        z_market: Standardized market shock(s). Can be scalar or array.
+        mu_tilt: Mean shift for importance sampling (< 0 to tilt toward crises).
+
+    Returns:
+        Importance weight(s) with same shape as z_market.
+
+    Note:
+        - For standard sampling (mu_tilt=0), weight = 1.0 (no correction)
+        - For mu_tilt < 0, negative shocks get higher weight (crisis-tilted)
+        - Total weight across all samples should average to ~1.0
+
+    Example:
+        >>> z = np.array([-2.0, -1.0, 0.0, 1.0])
+        >>> w = compute_importance_weight(z, mu_tilt=-0.5)
+        >>> # z=-2.0 gets higher weight (more likely under standard sampling)
+    """
+    # Closed-form expression: exp(mu_tilt * z - mu_tilt^2 / 2)
+    # This avoids numerical issues with density ratio computation
+    log_weight = mu_tilt * z_market - (mu_tilt ** 2) / 2
+    return np.exp(log_weight)
 
 
 def simulate_garch_dcc_returns(
@@ -102,7 +141,7 @@ def simulate_garch_dcc_returns(
                 size=n_simulations
             )
         except np.linalg.LinAlgError:
-            warnings.warn("Correlation matrix not positive definite, using identity")
+            logger.warning("Correlation matrix not positive definite, using identity matrix")
             z_t = np.random.randn(n_simulations, n_instruments)
 
         # Convert to returns: r_t = σ_t × z_t
@@ -168,7 +207,7 @@ def calculate_lrmes(
     n_crisis = crisis_mask.sum()
 
     if n_crisis < min_crisis_scenarios:
-        warnings.warn(
+        logger.warning(
             f"Only {n_crisis} crisis scenarios out of {n_simulations} "
             f"({n_crisis/n_simulations*100:.2f}%). Consider increasing simulations "
             f"or relaxing threshold."
@@ -369,7 +408,9 @@ def simulate_bivariate_garch_dcc(
     dcc_result: Dict,
     horizon: int = 22,
     n_simulations: int = 50000,
-    random_seed: Optional[int] = None
+    random_seed: Optional[int] = None,
+    use_importance_sampling: bool = False,
+    mu_tilt: float = 0.0
 ) -> Dict[str, np.ndarray]:
     """Simulate bivariate GARCH-DCC paths for bank and market jointly.
 
@@ -411,6 +452,8 @@ def simulate_bivariate_garch_dcc(
         horizon: Forecast horizon in periods (default 22 weeks).
         n_simulations: Number of Monte Carlo paths.
         random_seed: Random seed for reproducibility.
+        use_importance_sampling: If True, tilt market shocks toward crises (default False).
+        mu_tilt: Mean shift for market shocks under importance sampling (< 0 for crisis-tilting).
 
     Returns:
         Dictionary containing:
@@ -421,6 +464,7 @@ def simulate_bivariate_garch_dcc(
             - bank_volatilities: (n_simulations × horizon) array
             - market_volatilities: (n_simulations × horizon) array
             - correlations: (n_simulations × horizon) array of ρ_t
+            - importance_weights: (n_simulations,) array of importance weights (1.0 if not using IS)
 
     Example:
         >>> result = simulate_bivariate_garch_dcc(
@@ -459,6 +503,7 @@ def simulate_bivariate_garch_dcc(
     bank_vols = np.zeros((n_simulations, horizon))
     market_vols = np.zeros((n_simulations, horizon))
     correlations = np.zeros((n_simulations, horizon))
+    market_shocks = np.zeros((n_simulations, horizon))  # For importance weights
 
     # Simulate each path independently
     for n in range(n_simulations):
@@ -490,6 +535,14 @@ def simulate_bivariate_garch_dcc(
             u2 = np.random.randn()
             z_i = u1
             z_m = rho_t * u1 + np.sqrt(1 - rho_t**2) * u2
+
+            # Apply importance sampling tilt to market shock if enabled
+            # Sample from N(mu_tilt, 1) instead of N(0, 1) for crisis scenarios
+            if use_importance_sampling:
+                z_m = z_m + mu_tilt
+
+            # Store raw market shock for importance weight calculation
+            market_shocks[n, t] = z_m
 
             # Step 2: Compute returns
             r_i = mu_i + sigma_i * z_i
@@ -529,6 +582,20 @@ def simulate_bivariate_garch_dcc(
     bank_cumulative = bank_returns.sum(axis=1)
     market_cumulative = market_returns.sum(axis=1)
 
+    # Compute importance weights if using importance sampling
+    if use_importance_sampling:
+        # Importance weight for each simulation is product of weights across time
+        # w^(n) = ∏_{t=1}^h φ(z_m,t; 0, 1) / φ(z_m,t; μ_tilt, 1)
+        # In log space: log w^(n) = ∑_{t=1}^h [μ_tilt·z_m,t - μ_tilt²/2]
+        log_weights = np.sum(
+            mu_tilt * market_shocks - (mu_tilt ** 2) / 2,
+            axis=1
+        )
+        importance_weights = np.exp(log_weights)
+    else:
+        # No importance sampling: uniform weights
+        importance_weights = np.ones(n_simulations)
+
     return {
         "bank_cumulative_returns": bank_cumulative,
         "market_cumulative_returns": market_cumulative,
@@ -537,8 +604,11 @@ def simulate_bivariate_garch_dcc(
         "bank_volatilities": bank_vols,
         "market_volatilities": market_vols,
         "correlations": correlations,
+        "importance_weights": importance_weights,
         "horizon": horizon,
-        "n_simulations": n_simulations
+        "n_simulations": n_simulations,
+        "use_importance_sampling": use_importance_sampling,
+        "mu_tilt": mu_tilt if use_importance_sampling else 0.0
     }
 
 
@@ -548,6 +618,10 @@ def calculate_lrmes_from_bivariate(
     min_crisis_scenarios: int = 500
 ) -> Dict[str, float]:
     """Calculate LRMES from bivariate GARCH-DCC simulation results.
+
+    Supports both standard Monte Carlo and importance sampling estimators.
+    If importance sampling was used in simulation, applies proper weighting
+    to correct for the tilted distribution.
 
     Args:
         simulation_result: Output from simulate_bivariate_garch_dcc().
@@ -562,15 +636,34 @@ def calculate_lrmes_from_bivariate(
             - avg_bank_loss_in_crisis: Average bank loss | crisis
             - avg_market_loss_in_crisis: Average market loss | crisis
             - avg_correlation: Average correlation over horizon
+            - use_importance_sampling: Whether importance sampling was used
+            - effective_sample_size: ESS (only if IS used)
+            - efficiency_ratio: ESS/N_crisis, closer to 1.0 is better (only if IS used)
+            - mu_tilt: Tilt parameter (only if IS used)
+            - avg/max/min_importance_weight: Weight statistics (only if IS used)
 
-    Mathematical formula:
-        LRMES = E[1 - exp(r_i,t:t+h) | r_m,t:t+h < ln(1 + C)]
-        where C is crisis threshold (e.g., -0.40)
+    Mathematical formulas:
+        Standard MC:
+            LRMES = E[1 - exp(r_i,t:t+h) | r_m,t:t+h < ln(1 + C)]
+
+        Importance Sampling:
+            LRMES^IS = ∑_{n∈C} w^(n) · (1 - exp(r_i^(n))) / ∑_{n∈C} w^(n)
+            where w^(n) are importance weights and C is crisis scenarios
 
     Example:
+        >>> # Standard sampling
         >>> sim = simulate_bivariate_garch_dcc(bank, market, dcc, n_sim=50000)
         >>> lrmes_dict = calculate_lrmes_from_bivariate(sim, crisis_threshold=-0.40)
         >>> print(f"LRMES: {lrmes_dict['lrmes']:.4f}")
+        >>>
+        >>> # With importance sampling for variance reduction
+        >>> sim_is = simulate_bivariate_garch_dcc(
+        ...     bank, market, dcc, n_sim=50000,
+        ...     use_importance_sampling=True, mu_tilt=-0.5
+        ... )
+        >>> lrmes_dict_is = calculate_lrmes_from_bivariate(sim_is, crisis_threshold=-0.40)
+        >>> print(f"LRMES: {lrmes_dict_is['lrmes']:.4f}")
+        >>> print(f"ESS: {lrmes_dict_is['effective_sample_size']:.0f}")
     """
     bank_cumulative = simulation_result["bank_cumulative_returns"]
     market_cumulative = simulation_result["market_cumulative_returns"]
@@ -587,7 +680,7 @@ def calculate_lrmes_from_bivariate(
     n_crisis = crisis_mask.sum()
 
     if n_crisis < min_crisis_scenarios:
-        warnings.warn(
+        logger.warning(
             f"Only {n_crisis} crisis scenarios out of {n_simulations} "
             f"({n_crisis/n_simulations*100:.2f}%). Consider increasing simulations."
         )
@@ -598,25 +691,65 @@ def calculate_lrmes_from_bivariate(
             "Threshold may be too extreme."
         )
 
-    # Calculate LRMES
+    # Calculate LRMES with importance sampling correction if applicable
     bank_crisis_returns = bank_cumulative[crisis_mask]
     market_crisis_returns = market_cumulative[crisis_mask]
 
-    # LRMES = 1 - E[exp(r_i) | crisis]
-    # Returns are in percentage points, so divide by 100 before exp
-    equity_value_ratio = np.exp(bank_crisis_returns / 100)
-    lrmes = 1 - equity_value_ratio.mean()
+    # Check if importance sampling was used
+    use_importance_sampling = simulation_result.get("use_importance_sampling", False)
+
+    if use_importance_sampling:
+        # Importance sampling estimator:
+        # LRMES^IS = ∑_{n∈C} w^(n) · (1 - exp(r_i^(n))) / ∑_{n∈C} w^(n)
+        importance_weights = simulation_result["importance_weights"]
+        crisis_weights = importance_weights[crisis_mask]
+
+        # Returns are in percentage points, so divide by 100 before exp
+        equity_value_ratio = np.exp(bank_crisis_returns / 100)
+        losses = 1 - equity_value_ratio
+
+        # Weighted average
+        total_weight = crisis_weights.sum()
+        if total_weight > 0:
+            lrmes = (crisis_weights * losses).sum() / total_weight
+        else:
+            raise ValueError("Total importance weight is zero in crisis scenarios")
+
+        # Effective sample size (ESS) diagnostic
+        ess = (crisis_weights.sum() ** 2) / (crisis_weights ** 2).sum()
+    else:
+        # Standard Monte Carlo estimator (uniform weights)
+        # LRMES = 1 - E[exp(r_i) | crisis]
+        equity_value_ratio = np.exp(bank_crisis_returns / 100)
+        lrmes = 1 - equity_value_ratio.mean()
+        ess = n_crisis  # ESS = N for uniform weights
+
     lrmes = max(0, lrmes)  # LRMES >= 0
 
     # Diagnostics
-    return {
+    result = {
         "lrmes": lrmes,
         "n_crisis_scenarios": int(n_crisis),
         "crisis_probability": float(n_crisis / n_simulations),
         "avg_bank_loss_in_crisis": float(-bank_crisis_returns.mean()),
         "avg_market_loss_in_crisis": float(-market_crisis_returns.mean()),
-        "avg_correlation": float(correlations.mean())
+        "avg_correlation": float(correlations.mean()),
+        "use_importance_sampling": use_importance_sampling
     }
+
+    # Add importance sampling diagnostics
+    if use_importance_sampling:
+        result["effective_sample_size"] = float(ess)
+        result["efficiency_ratio"] = float(ess / n_crisis)  # ESS/N_crisis (1.0 is ideal)
+        result["mu_tilt"] = simulation_result.get("mu_tilt", 0.0)
+
+        # Weight diagnostics
+        crisis_weights = simulation_result["importance_weights"][crisis_mask]
+        result["avg_importance_weight"] = float(crisis_weights.mean())
+        result["max_importance_weight"] = float(crisis_weights.max())
+        result["min_importance_weight"] = float(crisis_weights.min())
+
+    return result
 
 
 def sensitivity_analysis_lrmes(
@@ -677,7 +810,7 @@ def sensitivity_analysis_lrmes(
                         })
 
             except Exception as e:
-                warnings.warn(f"Failed for threshold={threshold}, horizon={horizon}: {e}")
+                logger.warning(f"Failed for threshold={threshold}, horizon={horizon}: {e}")
 
     df = pd.DataFrame(results)
     return df
