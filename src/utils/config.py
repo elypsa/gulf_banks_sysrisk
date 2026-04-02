@@ -139,6 +139,23 @@ LSEG_FIELDS = {
 }
 
 
+# Column name standardization for aligned data
+# Maps verbose LSEG column names to programmatic names used in SRISK calculation
+FUNDAMENTAL_COLUMN_MAPPING = {
+    "Total Assets": "TotAssets",
+    "Common Equity - Total": "ComEqTot",
+    "Total Liabilities": "TotLiab",
+    "Total Liabilities & Equity": "TotLiabEq"
+}
+
+# Expected column name pattern for SRISK calculation:
+# - Debt (liabilities): fund_{bank_ric}_TotLiab
+# - Equity (market cap): mktcap_{bank_ric}
+# - Prices: price_{bank_ric}
+# - Returns: ret_{bank_ric}
+# - Benchmark returns: bench_ret_{benchmark_ric}
+
+
 # Country chain RICs for discovering bank universe
 GCC_CHAINS = {
     "UAE": "0#.TRXFLDAEPBANK",

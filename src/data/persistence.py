@@ -12,15 +12,15 @@ import json
 
 
 def save_dataframe(
-    df: pd.DataFrame,
+    df: pd.DataFrame | pd.Series,
     filename: str,
     data_dir: Path,
     metadata: Optional[Dict[str, Any]] = None
 ) -> None:
-    """Save a DataFrame to parquet format with metadata.
+    """Save a DataFrame or Series to parquet format with metadata.
 
     Args:
-        df: DataFrame to save.
+        df: DataFrame or Series to save.
         filename: Name of the file (without extension).
         data_dir: Directory to save the file (e.g., RAW_DATA_DIR).
         metadata: Optional metadata dictionary to save alongside.
@@ -39,6 +39,10 @@ def save_dataframe(
     if metadata is None:
         metadata = {}
     metadata["saved_at"] = datetime.now().isoformat()
+
+    # Convert Series to DataFrame for consistent saving
+    if isinstance(df, pd.Series):
+        df = df.to_frame()
 
     # Save DataFrame
     df.to_parquet(filepath, index=True, compression="snappy")

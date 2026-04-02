@@ -79,13 +79,13 @@ def load_required_data():
 
         # Reindex to match aligned_data dates and forward-fill
         # This propagates weekly LRMES estimates to daily frequency
-        lrmes_ts = lrmes_ts.reindex(aligned_data.index, method='ffill')
+        lrmes_ts = lrmes_ts.reindex(aligned_data.index).ffill()
 
         # Backward-fill any leading NaNs (before first window)
-        lrmes_ts = lrmes_ts.fillna(method='bfill')
+        lrmes_ts = lrmes_ts.bfill()
 
         # Check coverage
-        missing_banks = set(bank_universe['RIC']) - set(lrmes_ts.columns)
+        missing_banks = set(bank_universe['bank_ric']) - set(lrmes_ts.columns)
         if missing_banks:
             print(f"\n⚠ WARNING: {len(missing_banks)} banks missing from rolling LRMES panel:")
             print(f"  {', '.join(list(missing_banks)[:5])}" +

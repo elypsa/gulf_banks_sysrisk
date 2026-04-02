@@ -6,6 +6,7 @@ This module handles:
 - Currency conversion to USD
 - Missing value imputation
 - Data quality checks
+- Standardizing fundamental column names
 """
 
 import pandas as pd
@@ -326,6 +327,7 @@ def align_and_merge_data(
     4. Merging with daily market data
     5. Adding benchmark returns
     6. Converting to USD (optional)
+    7. Standardizing fundamental column names using FUNDAMENTAL_COLUMN_MAPPING
 
     Args:
         fundamentals: Quarterly fundamentals DataFrame.
@@ -419,11 +421,23 @@ def align_and_merge_data(
     # 7. Merge everything
     print("Merging all data sources...")
 
+    # Import mapping for standardizing fundamental column names
+    from src.utils.config import FUNDAMENTAL_COLUMN_MAPPING
+
     # Flatten column names and add prefixes to avoid conflicts
-    # fundamentals may have multi-index columns from LSEG
+    # fundamentals may have multi-index columns from LSEG: (bank_ric, field_name)
     if isinstance(fund_daily_usd.columns, pd.MultiIndex):
-        fund_daily_usd.columns = ['_'.join(map(str, col)).strip() for col in fund_daily_usd.columns]
-    fund_daily_usd = fund_daily_usd.add_prefix("fund_")
+        # Standardize field names using mapping
+        new_cols = []
+        for bank_ric, field_name in fund_daily_usd.columns:
+            # Use mapping if available, otherwise keep original
+            standardized_field = FUNDAMENTAL_COLUMN_MAPPING.get(field_name, field_name)
+            new_cols.append(f"fund_{bank_ric}_{standardized_field}")
+        fund_daily_usd.columns = new_cols
+        print(f"  ✓ Standardized {len(new_cols)} fundamental columns")
+    else:
+        # If not MultiIndex, use simple prefix
+        fund_daily_usd = fund_daily_usd.add_prefix("fund_")
 
     if isinstance(mkt_caps_df_usd.columns, pd.MultiIndex):
         mkt_caps_df_usd.columns = ['_'.join(map(str, col)).strip() for col in mkt_caps_df_usd.columns]
