@@ -3,19 +3,17 @@
 
 This script implements Phase 4 of the SRISK pipeline:
 1. Load processed data (aligned debt + equity)
-2. Load LRMES estimates from Phase 3 (static or rolling)
+2. Load time-varying LRMES from rolling window estimation (Phase 3b)
 3. Calculate SRISK using configured capital ratio
 4. Perform decomposition analysis (size, leverage, risk effects)
 5. Calculate system-wide SRISK and country aggregates
 6. Generate summary statistics
 7. Save results for reporting
 
-LRMES Modes:
-    - Static mode: Uses constant LRMES from lrmes_estimates.parquet
-    - Rolling mode: Uses time-varying LRMES from lrmes_rolling_panel.parquet
-      (enabled via CONFIG.ROLLING_WINDOW_ENABLED = True)
-
-Capital ratio can be adjusted in src/utils/config.py (CONFIG.CAPITAL_RATIO_BASEL)
+Requirements:
+    - Must run scripts/03b_estimate_garch_dcc_rolling.py first to generate LRMES panel
+    - Uses time-varying LRMES from lrmes_rolling_panel.parquet
+    - Capital ratio can be adjusted in src/utils/config.py (CONFIG.CAPITAL_RATIO_BASEL)
 
 Usage:
     uv run scripts/04_calculate_srisk.py
@@ -43,9 +41,8 @@ import pandas as pd
 def load_required_data():
     """Load all required data for SRISK calculation.
 
-    This function handles both static and rolling LRMES:
-    - If rolling window is enabled and panel data exists, use time-varying LRMES
-    - Otherwise, fall back to static LRMES (constant over time)
+    Loads time-varying LRMES from rolling window estimation (Phase 3b).
+    Requires lrmes_rolling_panel.parquet to exist in data/results/.
     """
     print("\n" + "=" * 60)
     print("LOADING DATA")
@@ -57,72 +54,57 @@ def load_required_data():
     print(f"\nAligned data: {aligned_data.shape}")
     print(f"Bank universe: {len(bank_universe)} banks")
 
-    # Check if rolling LRMES is enabled and available
+    # Load rolling LRMES panel (required)
     rolling_panel_path = RESULTS_DATA_DIR / "lrmes_rolling_panel.parquet"
 
-    if CONFIG.ROLLING_WINDOW_ENABLED and rolling_panel_path.exists():
-        print("\n✓ Loading ROLLING LRMES (time-varying)")
-
-        # Load rolling panel data
-        lrmes_panel = pd.read_parquet(rolling_panel_path)
-        print(f"  Panel shape: {lrmes_panel.shape}")
-        print(f"  Windows: {lrmes_panel['window_date'].nunique()}")
-        print(f"  Banks: {lrmes_panel['bank_ric'].nunique()}")
-        print(f"  Window date range: {lrmes_panel['window_date'].min()} to {lrmes_panel['window_date'].max()}")
-
-        # Pivot to (date × bank_ric) format
-        lrmes_ts = lrmes_panel.pivot(
-            index='window_date',
-            columns='bank_ric',
-            values='lrmes'
+    if not rolling_panel_path.exists():
+        raise FileNotFoundError(
+            f"\n✗ ERROR: Rolling LRMES panel not found at: {rolling_panel_path}\n"
+            f"Please run scripts/03b_estimate_garch_dcc_rolling.py first to generate LRMES panel."
         )
 
-        # Reindex to match aligned_data dates and forward-fill
-        # This propagates weekly LRMES estimates to daily frequency
-        lrmes_ts = lrmes_ts.reindex(aligned_data.index).ffill()
+    print("\n✓ Loading time-varying LRMES from rolling window estimation")
 
-        # Backward-fill any leading NaNs (before first window)
-        lrmes_ts = lrmes_ts.bfill()
+    # Load rolling panel data
+    lrmes_panel = pd.read_parquet(rolling_panel_path)
+    print(f"  Panel shape: {lrmes_panel.shape}")
+    print(f"  Windows: {lrmes_panel['window_date'].nunique()}")
+    print(f"  Banks: {lrmes_panel['bank_ric'].nunique()}")
+    print(f"  Window date range: {lrmes_panel['window_date'].min()} to {lrmes_panel['window_date'].max()}")
 
-        # Check coverage
-        missing_banks = set(bank_universe['bank_ric']) - set(lrmes_ts.columns)
-        if missing_banks:
-            print(f"\n⚠ WARNING: {len(missing_banks)} banks missing from rolling LRMES panel:")
-            print(f"  {', '.join(list(missing_banks)[:5])}" +
-                  (f" ... and {len(missing_banks)-5} more" if len(missing_banks) > 5 else ""))
+    # Pivot to (date × bank_ric) format
+    lrmes_ts = lrmes_panel.pivot(
+        index='window_date',
+        columns='bank_ric',
+        values='lrmes'
+    )
 
-        print(f"\n✓ LRMES time series shape: {lrmes_ts.shape}")
-        print(f"  Using TIME-VARYING LRMES from rolling window estimation")
+    # Reindex to match aligned_data dates and forward-fill
+    # This propagates weekly LRMES estimates to daily frequency
+    lrmes_ts = lrmes_ts.reindex(aligned_data.index).ffill()
 
-    else:
-        # Fall back to static LRMES
-        if CONFIG.ROLLING_WINDOW_ENABLED:
-            print(f"\n⚠ Rolling window enabled but panel data not found at: {rolling_panel_path}")
-            print("  Falling back to STATIC LRMES")
-        else:
-            print("\n✓ Loading STATIC LRMES (constant over time)")
+    # Backward-fill any leading NaNs (before first window)
+    lrmes_ts = lrmes_ts.bfill()
 
-        lrmes_df = load_dataframe("lrmes_estimates", RESULTS_DATA_DIR)
-        print(f"  LRMES estimates: {len(lrmes_df)} banks")
+    # Check coverage
+    missing_banks = set(bank_universe['bank_ric']) - set(lrmes_ts.columns)
+    if missing_banks:
+        print(f"\n⚠ WARNING: {len(missing_banks)} banks missing from rolling LRMES panel:")
+        print(f"  {', '.join(list(missing_banks)[:5])}" +
+              (f" ... and {len(missing_banks)-5} more" if len(missing_banks) > 5 else ""))
 
-        # Convert LRMES from single-row to time series (broadcast to all dates)
-        lrmes_values = dict(zip(lrmes_df["bank_ric"], lrmes_df["lrmes"]))
-
-        # Create time series DataFrame
-        lrmes_ts = pd.DataFrame(
-            {inst: [lrmes_values[inst]] * len(aligned_data) for inst in lrmes_values.keys()},
-            index=aligned_data.index
-        )
+    print(f"\n✓ LRMES time series shape: {lrmes_ts.shape}")
 
     return aligned_data, lrmes_ts, bank_universe
 
 
 def calculate_srisk_models(aligned_data, lrmes_ts, bank_universe):
-    """Calculate SRISK using configured capital ratio."""
+    """Calculate time-varying SRISK using configured capital ratio and rolling LRMES."""
     print("\n" + "=" * 60)
-    print("CALCULATING SRISK")
+    print("CALCULATING TIME-VARYING SRISK")
     print("=" * 60)
     print(f"Capital ratio: {CONFIG.CAPITAL_RATIO_BASEL * 100:.1f}%")
+    print(f"LRMES: Time-varying from rolling window estimation")
     print()
 
     # Calculate SRISK
@@ -138,10 +120,11 @@ def calculate_srisk_models(aligned_data, lrmes_ts, bank_universe):
 
     # Save SRISK time series
     save_dataframe(srisk, "srisk_timeseries", RESULTS_DATA_DIR, {
-        "description": f"SRISK time series (k={CONFIG.CAPITAL_RATIO_BASEL*100:.1f}%)",
+        "description": f"Time-varying SRISK from rolling window LRMES (k={CONFIG.CAPITAL_RATIO_BASEL*100:.1f}%)",
         "capital_ratio": CONFIG.CAPITAL_RATIO_BASEL,
         "crisis_threshold": CONFIG.CRISIS_THRESHOLD,
-        "horizon_weeks": CONFIG.CRISIS_HORIZON_WEEKS
+        "horizon_weeks": CONFIG.CRISIS_HORIZON_WEEKS,
+        "lrmes_type": "rolling_window"
     })
 
     return srisk
@@ -171,13 +154,15 @@ def calculate_system_aggregates(srisk):
 
     # Save system aggregates
     save_dataframe(system_srisk, "system_srisk", RESULTS_DATA_DIR, {
-        "description": "System-wide SRISK (sum of positive SRISK)",
-        "capital_ratio": CONFIG.CAPITAL_RATIO_BASEL
+        "description": "System-wide time-varying SRISK (sum of positive SRISK)",
+        "capital_ratio": CONFIG.CAPITAL_RATIO_BASEL,
+        "lrmes_type": "rolling_window"
     })
 
     save_dataframe(contributions, "srisk_contributions", RESULTS_DATA_DIR, {
-        "description": "Bank contributions to system SRISK (%)",
-        "capital_ratio": CONFIG.CAPITAL_RATIO_BASEL
+        "description": "Bank contributions to time-varying system SRISK (%)",
+        "capital_ratio": CONFIG.CAPITAL_RATIO_BASEL,
+        "lrmes_type": "rolling_window"
     })
 
     return system_srisk, contributions
@@ -195,8 +180,9 @@ def generate_summary_statistics(srisk, bank_universe):
     print(summary.head(10)[["bank_ric", "country", "mean_srisk", "latest_srisk"]].to_string(index=False))
 
     save_dataframe(summary, "srisk_summary", RESULTS_DATA_DIR, {
-        "description": f"SRISK summary statistics (k={CONFIG.CAPITAL_RATIO_BASEL*100:.1f}%)",
-        "capital_ratio": CONFIG.CAPITAL_RATIO_BASEL
+        "description": f"Time-varying SRISK summary statistics (k={CONFIG.CAPITAL_RATIO_BASEL*100:.1f}%)",
+        "capital_ratio": CONFIG.CAPITAL_RATIO_BASEL,
+        "lrmes_type": "rolling_window"
     })
 
     return summary
@@ -216,8 +202,9 @@ def calculate_country_aggregates(srisk, bank_universe):
         print(f"  - {country}: ${srisk_val / 1e9:.2f}B")
 
     save_dataframe(country_srisk, "srisk_by_country", RESULTS_DATA_DIR, {
-        "description": f"SRISK aggregated by country (k={CONFIG.CAPITAL_RATIO_BASEL*100:.1f}%)",
-        "capital_ratio": CONFIG.CAPITAL_RATIO_BASEL
+        "description": f"Time-varying SRISK aggregated by country (k={CONFIG.CAPITAL_RATIO_BASEL*100:.1f}%)",
+        "capital_ratio": CONFIG.CAPITAL_RATIO_BASEL,
+        "lrmes_type": "rolling_window"
     })
 
     return country_srisk
@@ -261,8 +248,9 @@ def perform_decomposition_analysis(aligned_data, lrmes_ts, bank_universe):
     print(decomp_df.to_string(index=False))
 
     save_dataframe(decomp_df, "srisk_decomposition", RESULTS_DATA_DIR, {
-        "description": "SRISK decomposition (size, leverage, risk effects)",
-        "capital_ratio": CONFIG.CAPITAL_RATIO_BASEL
+        "description": "Time-varying SRISK decomposition (size, leverage, risk effects)",
+        "capital_ratio": CONFIG.CAPITAL_RATIO_BASEL,
+        "lrmes_type": "rolling_window"
     })
 
 
@@ -280,36 +268,39 @@ def main():
         srisk = calculate_srisk_models(aligned_data, lrmes_ts, bank_universe)
 
         # 3. System aggregates
-        system_srisk, contributions = calculate_system_aggregates(srisk)
+        # system_srisk, contributions = calculate_system_aggregates(srisk)
 
         # 4. Summary statistics
-        summary = generate_summary_statistics(srisk, bank_universe)
+        # summary = generate_summary_statistics(srisk, bank_universe)
 
         # 5. Country aggregates
-        country_srisk = calculate_country_aggregates(srisk, bank_universe)
+        # country_srisk = calculate_country_aggregates(srisk, bank_universe)
 
         # 6. Decomposition
-        perform_decomposition_analysis(aligned_data, lrmes_ts, bank_universe)
+        # perform_decomposition_analysis(aligned_data, lrmes_ts, bank_universe)
 
         # Final summary
         print("\n" + "=" * 60)
-        print("✓ SRISK CALCULATION COMPLETED")
+        print("✓ TIME-VARYING SRISK CALCULATION COMPLETED")
         print("=" * 60)
-        print(f"\nCapital ratio used: {CONFIG.CAPITAL_RATIO_BASEL*100:.1f}%")
-        print(f"Crisis threshold: {CONFIG.CRISIS_THRESHOLD*100:.1f}% market decline")
-        print(f"Horizon: {CONFIG.CRISIS_HORIZON_WEEKS} weeks")
+        print(f"\nParameters:")
+        print(f"  - Capital ratio: {CONFIG.CAPITAL_RATIO_BASEL*100:.1f}%")
+        print(f"  - Crisis threshold: {CONFIG.CRISIS_THRESHOLD*100:.1f}% market decline")
+        print(f"  - Horizon: {CONFIG.CRISIS_HORIZON_WEEKS} weeks")
+        print(f"  - LRMES: Time-varying (rolling window estimation)")
         print(f"\nResults saved to: {RESULTS_DATA_DIR}")
-        print("\nKey outputs:")
+        print("\nKey outputs (all time-varying):")
         print("  - srisk_timeseries.parquet - SRISK time series")
-        print("  - system_srisk.parquet - System-wide SRISK")
-        print("  - srisk_contributions.parquet - Bank contributions (%)")
-        print("  - srisk_summary.parquet - Summary statistics")
-        print("  - srisk_by_country.parquet - Country aggregates")
-        print("  - srisk_decomposition.parquet - Decomposition analysis")
+        # print("  - system_srisk.parquet - System-wide SRISK")
+        # print("  - srisk_contributions.parquet - Bank contributions (%)")
+        # print("  - srisk_summary.parquet - Summary statistics")
+        # print("  - srisk_by_country.parquet - Country aggregates")
+        # print("  - srisk_decomposition.parquet - Decomposition analysis")
 
-        print("\nNext step:")
+        print("\nNext steps:")
         print("  - Review results in data/results/")
         print("  - Generate reports and visualizations")
+        print("  - Analyze time variation in SRISK estimates")
 
     except Exception as e:
         print(f"\n✗ ERROR: {e}")
