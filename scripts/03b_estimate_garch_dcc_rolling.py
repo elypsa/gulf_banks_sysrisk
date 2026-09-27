@@ -108,8 +108,8 @@ def main():
     print("=" * 80)
 
     estimator = RollingWindowEstimator(
-        bank_returns=bank_returns,
-        benchmark_returns=benchmark_returns,
+        bank_returns=bank_returns[['FAB.AD', 'ENBD.DU']], # remove this hardcoding!!
+        benchmark_returns=benchmark_returns, 
         benchmark_name=benchmark_name,
         window_days=CONFIG.ROLLING_WINDOW_DAYS,
         step_days=CONFIG.ROLLING_STEP_DAYS,

@@ -27,7 +27,7 @@ class SRISKConfig:
 
     # LRMES parameters
     CRISIS_HORIZON_WEEKS: int = 22  # 6 months in trading weeks
-    CRISIS_THRESHOLD: float = -0.15  # -15% market decline (percentage, converted to log return internally)
+    CRISIS_THRESHOLD: float = -0.25  # -40% market decline (percentage, converted to log return internally)
     N_SIMULATIONS: int = 50000  # Monte Carlo paths
     RANDOM_SEED: int = 42  # For reproducibility
 
